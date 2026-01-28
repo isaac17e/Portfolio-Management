@@ -24,25 +24,25 @@ library(dplyr)
 n_top_nasdaq <- 350
 n_top_sp500 <- 350
 n_top_int <- 50  
-target_months <- c(01, 02, 03)
+target_months <- c(02)
 target_years <- 2014:2025
 mdd_start_year <- 2014  
 rf_rate <- 0.095  
-n_divers_candidates <- 35
 seed <- 123
 max_weight <- 0.20
 n_sim <- 5000
 target_total_tickers <- 800
 
 # Risk Profile
-lambda <- 3
+lambda <- 3  
+# Pesos de selección
+weight_sharpe <- 0.50          # Rendimiento es REY
+weight_low_vol <- 0.25         # Volatilidad secundaria
+weight_decorr <- 0.25 # Diversificación táctica
 
-weight_sharpe <- 0.20          # Rendimiento es secundario
-weight_low_vol <- 0.60         # PRIORIDAD ABSOLUTA: Estabilidad
-weight_decorr <- 0.20          # Diversificación moderada
-
-volatility_percentile <- 0.30  # MUY estricto: solo el 30% menos volátil
-correlation_percentile <- 0.65 # Permisivo: decorrelación no crítica
+n_divers_candidates <- 45
+volatility_percentile <- 0.75  # Muy permisivo: acepta alta volatilidad
+correlation_percentile <- 0.70 # Muy permisivo: universo amplio
 
 correlation_order <- 0
 
