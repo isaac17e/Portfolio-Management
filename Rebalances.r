@@ -27,23 +27,24 @@ if ("plyr" %in% (.packages())) {
 # ============================================================================
 
 # 1. PORTAFOLIO ACTUAL
-tickers <- c("GD", "LHX", "DB1.DE", "AMZN", "CME", "COO", "KR", "ESLT", "FER", 
-             "PGR", "CB", "NG.L", "CTSH", "CCEP", "LMT", "GOOGL", " NOC")
+tickers <- c("ADI", "ELV", "TLT", "MSCI", "GD", "LHX", "LMT", "FAN", "ENTG", 
+             "GOLD", "EW", "DGE.L", "NFLX", "ATO", "TJX", "PSA", "AEE", "RMD", "ISRG", 
+             "STE", "FAST")
 
-pesos <- c(0.122, 0.114, 0.1, 0.082, 0.08, 0.07, 0.062, 0.06, 0.056, 0.056, 
-           0.044, 0.04, 0.032, 0.02, 0.016, 0.012, 0.012)
+pesos <- c(0.101, 0.086, 0.081, 0.076, 0.072, 0.072, 0.072, 0.062, 0.05, 0.05, 
+           0.042, 0.039, 0.03, 0.025, 0.023, 0.022, 0.02, 0.02, 0.017, 0.017, 0.015)
 
 # 2. TICKERS A ELIMINAR (Editable)
-tickers_eliminar <- c("ESLT", "FER", "NG.L")
+tickers_eliminar <- c("NFLX", "ISRG")
 
 # 3. HORIZONTE TEMPORAL
-target_months <- c(1, 2)  # Enero, Febrero (editable)
+target_months <- c(2)  # Enero, Febrero (editable)
 target_years <- 2015:2025     # Rango de años (editable)
 horizon_months <- length(target_months)
 horizon_label <- paste(month.abb[target_months], collapse = "-")
 
 # 4. LAMBDA (Coeficiente de aversión al riesgo)
-lambda <- 0.5
+lambda <- 1
 
 # 5. PARÁMETROS DE SELECCIÓN DE CANDIDATOS
 n_candidates_nasdaq <- 250     # Número de tickers a tomar del NASDAQ
@@ -51,17 +52,17 @@ n_top_sp500 <- 200              # **NUEVO: Número de tickers a tomar del S&P 50
 min_observations <- 5
 ideal_observations <- 8
 
-volatility_percentile <- 0.70  # Muy permisivo
-correlation_percentile <- 0.70 # Muy permisivo
+volatility_percentile <- 0.40  # Moderado-estricto: 40% menos volátil
+correlation_percentile <- 0.60 # Moderado: acepta más universo
 correlation_order <- 0
 
 # 6. PESOS DE SCORING
-weight_sharpe <- 0.50          # Rendimiento es REY
-weight_low_vol <- 0.25         # Volatilidad menos relevante
-weight_decorr <- 0.25          # Diversificación táctica
+weight_sharpe <- 0.25          # Rendimiento empieza a importar
+weight_low_vol <- 0.50         # Estabilidad sigue siendo prioritaria
+weight_decorr <- 0.25          # Diversificación más valorada
 
 # 7. RESTRICCIONES DE PORTAFOLIO
-max_weight <- 0.20
+max_weight <- 0.12
 rf_rate_period <- 0.0075
 n_sim <- 5000
 seed <- 123

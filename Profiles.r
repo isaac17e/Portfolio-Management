@@ -16,7 +16,7 @@ correlation_percentile <- 0.50 # Estricto: solo mitad menos correlacionada
 correlation_order <- 0         # Preferir baja correlación (diversificación)
 
 # === PERFIL: CONSERVADOR-MODERADO ===
-lambda <- 3.5  # Aversión al riesgo moderada-alta
+lambda <- 1  # Aversión al riesgo moderada-alta
 # Pesos de selección
 weight_sharpe <- 0.25          # Rendimiento empieza a importar
 weight_low_vol <- 0.50         # Estabilidad sigue siendo prioritaria

@@ -1,5 +1,6 @@
 # Por: Isaac Echeverri
 # Rendimiento y rentabilidad con horizonte temporal extendido (1, 2 o 3 meses)
+# VERSIÓN CON OPTIMIZACIÓN COMPLETA Y RESTRICCIÓN DE PESO MÍNIMO
 rm(list = ls())
 
 library(quantmod)
@@ -9,7 +10,7 @@ library(gridExtra)
 # ============================================================================
 # FECHA DE ANÁLISIS
 # ============================================================================
-fecha_cierre <- "2025-12-31"  # Última fecha con datos completos
+fecha_cierre <- "2026-01-30"  # Última fecha con datos completos
 
 today <- as.Date(fecha_cierre)
 
@@ -17,11 +18,11 @@ today <- as.Date(fecha_cierre)
 # CONFIGURACIÓN DE HORIZONTE TEMPORAL
 # ============================================================================
 # Mes inicial de análisis
-inicio_mes <- 01  
+inicio_mes <- 02  
 
 # HORIZONTE TEMPORAL: ¿Cuántos meses analizar?
 # Opciones: 1, 2 o 3
-horizonte_meses <-2  # Cambia según necesites
+horizonte_meses <- 1  # Cambia según necesites
 
 # Generar secuencia de meses a analizar
 meses_analizar <- ((inicio_mes - 1) + 0:(horizonte_meses - 1)) %% 12 + 1
@@ -30,7 +31,7 @@ meses_analizar <- ((inicio_mes - 1) + 0:(horizonte_meses - 1)) %% 12 + 1
 # MODO DE ANÁLISIS
 # ============================================================================
 # 1 = Solo evaluar portafolio nuevo (ignora rebalanceo)
-# 0 = Aplicar rebalanceo (AGREGAR o INTERCAMBIAR)
+# 0 = Aplicar rebalanceo con optimización y restricción
 solo_evaluar <- 1  
 
 # ============================================================================
@@ -38,91 +39,100 @@ solo_evaluar <- 1
 # ============================================================================
 
 # Portafolio nuevo propuesto
-tickers <- c("GD", "LHX", "DB1.DE", "AMZN", "CME", "COO", "KR", "TMUS", "JKHY", 
-             "PGR", "CB", "CINF", "CTSH", "CCEP", "LMT", "GOOGL", "NOC")
-weights <- c(0.122, 0.114, 0.1, 0.082, 0.08, 0.07, 0.062, 0.06, 0.056, 0.056, 
-             0.044, 0.04, 0.032, 0.02, 0.016, 0.12, 0.12)
+tickers <- c("ADI", "ELV", "TLT", "MSCI", "FAN", "ENTG", "GLD", "EW", "DGE.L", 
+             "ATO", "TJX", "PSA", "AEE", "RMD", "ISRG", "STE", "FAST", "NG.L", 
+             "KDP", "FER")
+weights <- c(0.12, 0.102, 0.096, 0.09, 0.074, 0.06, 0.06, 0.05, 0.046, 
+             0.03, 0.028, 0.026, 0.024, 0.024, 0.02, 0.02, 0.018, 0.016, 0.014, 0.014)
 
 # ============================================================================
 # ESTRATEGIA DE REBALANCEO (Solo se usa si solo_evaluar = 0)
 # ============================================================================
 estrategia <- "INTERCAMBIAR"  # Cambia a "AGREGAR" si prefieres expandir
 
-tickers_mantener <- c("AMZN", "GOOGL")
-pesos_reales_mantener <- c(0.082, 0.012)
-tickers_a_reemplazar <- c("DBB", "DBA")
+# Tickers que quieres mantener (con alta convicción)
+tickers_mantener <- c("GD", "LHX", "LMT")
+
+# RESTRICCIÓN: Peso mínimo TOTAL para estos tickers (como decimal)
+# Ejemplo: 0.10 = mínimo 10% del portafolio total en estos tickers
+# El código optimizará los pesos pero garantizará este mínimo
+peso_minimo_mantener <- 0.10  # Ajusta según tu criterio
+
+# Solo para modo INTERCAMBIAR: tickers del portafolio propuesto a reemplazar
+tickers_a_reemplazar <- c("ABBV", "NG.L", "FER")
 
 # ============================================================================
-# REBALANCEO AUTOMÁTICO CON PESOS REALES
+# REBALANCEO CON OPTIMIZACIÓN Y RESTRICCIÓN DE PESO MÍNIMO
 # ============================================================================
 
 if (solo_evaluar == 0 && length(tickers_mantener) > 0) {
   
-  if (length(pesos_reales_mantener) != length(tickers_mantener)) {
-    stop("ERROR: Debes especificar un peso real para cada ticker a mantener")
-  }
+  # Guardar portafolio original para comparación
+  tickers_originales <- tickers
+  weights_originales <- weights
   
-  peso_total_mantener <- sum(pesos_reales_mantener)
-  peso_disponible <- 1 - peso_total_mantener
-  
-  if (peso_disponible < 0) {
-    stop("ERROR: Los pesos reales de los tickers a mantener suman más del 100%")
-  }
-  
-  cat("\n=== REBALANCEO DE PORTAFOLIO CON PESOS REALES ===\n")
+  cat("\n=== REBALANCEO CON OPTIMIZACIÓN COMPLETA ===\n")
   cat("Estrategia:", estrategia, "\n")
-  cat("Capital YA invertido:", round(peso_total_mantener * 100, 2), "%\n")
-  cat("Capital disponible para nuevo portafolio:", round(peso_disponible * 100, 2), "%\n\n")
+  cat("Restricción: Peso mínimo total para tickers a mantener:", 
+      round(peso_minimo_mantener * 100, 2), "%\n\n")
   
-  cat("Posiciones mantenidas (pesos reales actuales):\n")
-  for (i in seq_along(tickers_mantener)) {
-    cat("  •", tickers_mantener[i], ":", round(pesos_reales_mantener[i] * 100, 2), "%\n")
-  }
-  cat("\n")
-  
+  # Crear universo combinado de tickers según estrategia
   if (estrategia == "INTERCAMBIAR") {
     cat("→ Modo: INTERCAMBIAR (reemplazar activos específicos)\n")
+    cat("Tickers a mantener:", paste(tickers_mantener, collapse = ", "), "\n")
     cat("Tickers a reemplazar:", paste(tickers_a_reemplazar, collapse = ", "), "\n\n")
     
     if (length(tickers_mantener) != length(tickers_a_reemplazar)) {
       stop("ERROR: Debes especificar el mismo número de tickers a mantener y a reemplazar")
     }
     
+    # Eliminar tickers a reemplazar del portafolio propuesto
     tickers_sin_reemplazar <- tickers[!tickers %in% tickers_a_reemplazar]
     weights_sin_reemplazar <- weights[!tickers %in% tickers_a_reemplazar]
     
-    if (length(weights_sin_reemplazar) > 0) {
-      weights_sin_reemplazar <- weights_sin_reemplazar / sum(weights_sin_reemplazar) * peso_disponible
-    }
+    # Crear universo completo (mantener + resto del propuesto)
+    universo_tickers <- c(tickers_mantener, tickers_sin_reemplazar)
     
-    tickers_final <- c(tickers_mantener, tickers_sin_reemplazar)
-    weights_final <- c(pesos_reales_mantener, weights_sin_reemplazar)
+    # Usar pesos del portafolio propuesto como base
+    # Para tickers a mantener, usar pesos promedio como punto de partida
+    peso_promedio_mantener <- mean(weights)
+    weights_base_mantener <- rep(peso_promedio_mantener, length(tickers_mantener))
+    universo_weights_base <- c(weights_base_mantener, weights_sin_reemplazar)
     
-    cat("Rebalanceo aplicado:\n")
+    cat("Reemplazo aplicado:\n")
     for (i in seq_along(tickers_mantener)) {
-      cat("  ✓", tickers_a_reemplazar[i], "→", tickers_mantener[i], 
-          "(peso real:", round(pesos_reales_mantener[i] * 100, 2), "%)\n")
+      cat("  ✓", tickers_a_reemplazar[i], "→", tickers_mantener[i], "\n")
     }
     cat("\n")
     
-    tickers <- tickers_final
-    weights <- weights_final
-    
   } else if (estrategia == "AGREGAR") {
-    cat("→ Modo: AGREGAR (expandir portafolio manteniendo todos los activos)\n\n")
+    cat("→ Modo: AGREGAR (expandir portafolio)\n")
+    cat("Tickers a mantener/agregar:", paste(tickers_mantener, collapse = ", "), "\n\n")
     
+    # Verificar duplicados
     tickers_ya_existentes <- tickers_mantener[tickers_mantener %in% tickers]
     tickers_nuevos_a_agregar <- tickers_mantener[!tickers_mantener %in% tickers]
     
+    # Eliminar duplicados del portafolio propuesto
     tickers_filtrados <- tickers[!tickers %in% tickers_ya_existentes]
     weights_filtrados <- weights[!tickers %in% tickers_ya_existentes]
     
-    if (length(weights_filtrados) > 0) {
-      weights_filtrados <- weights_filtrados / sum(weights_filtrados) * peso_disponible
+    # Crear universo completo
+    universo_tickers <- c(tickers_mantener, tickers_filtrados)
+    
+    # Pesos base: usar pesos existentes para duplicados, promedio para nuevos
+    weights_base_mantener <- numeric(length(tickers_mantener))
+    for (i in seq_along(tickers_mantener)) {
+      if (tickers_mantener[i] %in% tickers) {
+        # Usar peso original
+        weights_base_mantener[i] <- weights[which(tickers == tickers_mantener[i])]
+      } else {
+        # Usar peso promedio para nuevos
+        weights_base_mantener[i] <- mean(weights)
+      }
     }
     
-    tickers_final <- c(tickers_mantener, tickers_filtrados)
-    weights_final <- c(pesos_reales_mantener, weights_filtrados)
+    universo_weights_base <- c(weights_base_mantener, weights_filtrados)
     
     if (length(tickers_ya_existentes) > 0) {
       cat("  ⚠ Eliminados por duplicado:", paste(tickers_ya_existentes, collapse = ", "), "\n")
@@ -131,28 +141,92 @@ if (solo_evaluar == 0 && length(tickers_mantener) > 0) {
       cat("  ✓ Agregados al portafolio:", paste(tickers_nuevos_a_agregar, collapse = ", "), "\n")
     }
     cat("\n")
-    
-    tickers <- tickers_final
-    weights <- weights_final
   }
   
-  suma_pesos <- sum(weights)
-  if (abs(suma_pesos - 1.0) > 0.001) {
-    cat("  ⚠ Ajustando normalización final (suma:", round(suma_pesos, 4), ")\n")
-    weights <- weights / suma_pesos
-  }
+  # ========================================================================
+  # OPTIMIZACIÓN CON RESTRICCIÓN DE PESO MÍNIMO
+  # ========================================================================
+  cat("=== OPTIMIZANDO PESOS CON RESTRICCIÓN ===\n")
   
-  cat("=== PORTAFOLIO FINAL REBALANCEADO ===\n")
+  # Normalizar pesos base
+  universo_weights_base <- universo_weights_base / sum(universo_weights_base)
+  
+  n_mantener <- length(tickers_mantener)
+  n_total <- length(universo_tickers)
+  
+  # Estrategia de optimización:
+  # 1. Asignar el peso mínimo requerido a los tickers a mantener
+  # 2. Distribuir el resto del peso (1 - peso_minimo) proporcionalmente
+  
+  # Calcular peso base para cada ticker a mantener (proporcional a sus pesos originales)
+  pesos_mantener_proporcional <- universo_weights_base[1:n_mantener]
+  pesos_mantener_proporcional <- pesos_mantener_proporcional / sum(pesos_mantener_proporcional)
+  
+  # Asignar el peso mínimo proporcionalmente entre tickers a mantener
+  pesos_mantener_minimo <- pesos_mantener_proporcional * peso_minimo_mantener
+  
+  # Peso disponible para distribución general
+  peso_disponible <- 1 - peso_minimo_mantener
+  
+  # Distribuir peso disponible proporcionalmente entre TODOS los tickers
+  weights_proporcional <- universo_weights_base * peso_disponible
+  
+  # Combinar: tickers a mantener reciben su mínimo + su proporción del resto
+  weights_final <- weights_proporcional
+  weights_final[1:n_mantener] <- weights_final[1:n_mantener] + pesos_mantener_minimo
+  
+  # Normalizar para asegurar suma exacta = 1
+  weights_final <- weights_final / sum(weights_final)
+  
+  # Actualizar tickers y weights globales
+  tickers <- universo_tickers
+  weights <- weights_final
+  
+  cat("✓ Optimización completada\n")
+  cat("  • Total de activos en portafolio:", n_total, "\n")
+  cat("  • Peso asignado a tickers a mantener:", 
+      round(sum(weights[1:n_mantener]) * 100, 2), "%")
+  if (sum(weights[1:n_mantener]) > peso_minimo_mantener) {
+    cat(" (mínimo requerido:", round(peso_minimo_mantener * 100, 2), "%)\n")
+  } else {
+    cat("\n")
+  }
+  cat("  • Peso en resto del portafolio:", 
+      round(sum(weights[(n_mantener+1):n_total]) * 100, 2), "%\n\n")
+  
+  # ========================================================================
+  # MOSTRAR COMPARACIÓN ANTES vs DESPUÉS
+  # ========================================================================
+  cat("=== COMPARACIÓN: ANTES vs DESPUÉS DEL REBALANCEO ===\n\n")
+  
+  cat("PORTAFOLIO PROPUESTO ORIGINAL:\n")
+  original_df <- data.frame(
+    Ticker = tickers_originales,
+    Peso = paste0(round(weights_originales * 100, 2), "%"),
+    Peso_Decimal = weights_originales
+  ) %>% arrange(desc(Peso_Decimal))
+  print(head(original_df %>% select(Ticker, Peso), 10))
+  if (length(tickers_originales) > 10) {
+    cat("... (", length(tickers_originales), "activos totales)\n")
+  }
+  cat("Suma:", round(sum(weights_originales) * 100, 2), "%\n\n")
+  
+  cat("PORTAFOLIO FINAL OPTIMIZADO:\n")
   portfolio_df <- data.frame(
     Ticker = tickers,
-    Peso = paste0(round(weights * 100, 2), "%"),
-    Tipo = ifelse(tickers %in% tickers_mantener, "MANTENER (real)", "NUEVO"),
-    Peso_Numerico = weights
-  ) %>% arrange(desc(Peso_Numerico)) %>% select(-Peso_Numerico)
-  print(portfolio_df)
-  cat("\nTotal de activos:", length(tickers), "\n")
-  cat("Capital mantenido:", round(sum(weights[tickers %in% tickers_mantener]) * 100, 2), "%\n")
-  cat("Capital nuevo invertido:", round(sum(weights[!tickers %in% tickers_mantener]) * 100, 2), "%\n")
+    Peso_Porcentaje = paste0(round(weights * 100, 2), "%"),
+    Peso_Decimal = round(weights, 4),
+    Tipo = ifelse(tickers %in% tickers_mantener, "MANTENER", "OPTIMIZADO")
+  ) %>% arrange(desc(Peso_Decimal))
+  
+  print(portfolio_df %>% select(Ticker, Peso_Porcentaje, Tipo))
+  
+  cat("\n--- RESUMEN DEL PORTAFOLIO OPTIMIZADO ---\n")
+  cat("Total de activos:", length(tickers), "\n")
+  cat("Activos a mantener (con restricción):", sum(tickers %in% tickers_mantener), "\n")
+  cat("Peso total en activos a mantener:", 
+      round(sum(weights[tickers %in% tickers_mantener]) * 100, 2), "%")
+  cat(" (mínimo requerido:", round(peso_minimo_mantener * 100, 2), "%)\n")
   cat("Suma total de pesos:", round(sum(weights), 4), "\n\n")
   
 } else if (solo_evaluar == 1) {
@@ -162,11 +236,20 @@ if (solo_evaluar == 0 && length(tickers_mantener) > 0) {
   
   portfolio_df <- data.frame(
     Ticker = tickers,
-    Peso = paste0(round(weights * 100, 2), "%"),
-    Peso_Numerico = weights
-  ) %>% arrange(desc(Peso_Numerico)) %>% select(-Peso_Numerico)
-  print(portfolio_df)
-  cat("\nSuma total de pesos:", round(sum(weights), 4), "\n\n")
+    Peso_Porcentaje = paste0(round(weights * 100, 2), "%"),
+    Peso_Decimal = round(weights, 4)
+  ) %>% arrange(desc(Peso_Decimal))
+  
+  print(portfolio_df %>% select(Ticker, Peso_Porcentaje))
+  
+  cat("\n--- RESUMEN DEL PORTAFOLIO ---\n")
+  cat("Suma total de pesos:", round(sum(weights), 4), "\n")
+  
+  if (sum(weights) < 0.99) {
+    cat("⚠️ NOTA: El portafolio suma", round(sum(weights) * 100, 2), "% (queda", 
+        round((1 - sum(weights)) * 100, 2), "% sin invertir)\n")
+  }
+  cat("\n")
   
 } else {
   cat("\n=== SIN REBALANCEO ===\n")
@@ -177,9 +260,9 @@ if (solo_evaluar == 0 && length(tickers_mantener) > 0) {
 # ANÁLISIS DE RENDIMIENTOS MULTI-HORIZONTE
 # ============================================================================
 
-# Configuración de años
+# Configuración de años (DINÁMICO basado en fecha_cierre)
 year_inicio <- 2020  # Año desde el cual iniciar el análisis
-year_current <- as.numeric(format(today, "%Y"))
+year_current <- as.numeric(format(today, "%Y"))  # Año actual dinámico
 years <- year_inicio:(year_current - 1)  # Años completos hasta el año anterior al actual
 
 # Función para obtener nombre del mes
@@ -196,6 +279,7 @@ periodo_str <- if (horizonte_meses == 1) {
 }
 
 cat("\n=== ANÁLISIS MULTI-HORIZONTE ===\n")
+cat("Año de proyección:", year_current, "\n")
 cat("Horizonte temporal:", horizonte_meses, "mes(es)\n")
 cat("Período analizado:", periodo_str, "\n")
 cat("Meses incluidos:", paste(meses_analizar, collapse = ", "), "\n\n")
@@ -354,7 +438,7 @@ if (horizonte_meses == 1) {
 # ============================================================================
 
 cat("\n\n=== RESUMEN DE RESULTADOS POR HORIZONTE ===\n")
-cat("Portafolio optimizado por: UTILIDAD CUADRÁTICA\n")
+cat("Portafolio optimizado con restricción de peso mínimo\n")
 cat(sprintf("Período de análisis histórico: %d-%d\n", year_inicio, year_current - 1))
 cat(sprintf("Año actual: %d YTD (parcial)\n\n", year_current))
 
@@ -375,11 +459,39 @@ df_comparativo <- data.frame(
   Horizonte = paste(1:horizonte_meses, "mes(es)"),
   Período = sapply(resultados_por_horizonte, function(x) x$periodo),
   Media_Histórica = sprintf("%.2f%%", sapply(resultados_por_horizonte, function(x) x$media)),
-  Proyección_2025 = sprintf("%.2f%%", sapply(resultados_por_horizonte, function(x) x$proyeccion)),
+  Proyección = sprintf("%.2f%%", sapply(resultados_por_horizonte, function(x) x$proyeccion)),
   IC_95_Inferior = sprintf("%.2f%%", sapply(resultados_por_horizonte, function(x) x$ic_inferior)),
   IC_95_Superior = sprintf("%.2f%%", sapply(resultados_por_horizonte, function(x) x$ic_superior)),
   Volatilidad = sprintf("%.2f%%", sapply(resultados_por_horizonte, function(x) x$volatilidad))
 )
+
+# Renombrar columna de proyección dinámicamente
+colnames(df_comparativo)[4] <- paste0("Proyección_", year_current)
+
 print(df_comparativo)
+
+cat("\n=== COMPOSICIÓN FINAL DEL PORTAFOLIO ANALIZADO ===\n")
+portfolio_final_df <- data.frame(
+  Ticker = tickers,
+  Peso_Porcentaje = paste0(round(weights * 100, 2), "%"),
+  Peso_Decimal = round(weights, 4)
+) %>% arrange(desc(Peso_Decimal))
+
+print(portfolio_final_df %>% select(Ticker, Peso_Porcentaje))
+
+cat("\nTotal de activos:", length(tickers), "\n")
+cat("Capital total invertido:", round(sum(weights) * 100, 2), "%\n")
+
+if (solo_evaluar == 0 && length(tickers_mantener) > 0) {
+  cat("  • Capital en activos con restricción:", 
+      round(sum(weights[tickers %in% tickers_mantener]) * 100, 2), "%")
+  cat(" (mínimo requerido:", round(peso_minimo_mantener * 100, 2), "%)\n")
+  cat("  • Capital en activos optimizados:", 
+      round(sum(weights[!tickers %in% tickers_mantener]) * 100, 2), "%\n")
+}
+
+if (sum(weights) < 0.99) {
+  cat("  • Capital sin invertir:", round((1 - sum(weights)) * 100, 2), "%\n")
+}
 
 cat("\n=== ANÁLISIS COMPLETADO ===\n")
