@@ -34,15 +34,15 @@ n_sim <- 5000
 target_total_tickers <- 800
 
 # Risk Profile
-lambda <- 3  
+lambda <- 4  
 # Pesos de selección
-weight_sharpe <- 0.50          # Rendimiento es REY
-weight_low_vol <- 0.25         # Volatilidad secundaria
-weight_decorr <- 0.25 # Diversificación táctica
+weight_sharpe <- 0.25          # Rendimiento empieza a importar
+weight_low_vol <- 0.50         # Estabilidad sigue siendo prioritaria
+weight_decorr <- 0.25          # Diversificación más valorada
 
-n_divers_candidates <- 45
-volatility_percentile <- 0.75  # Muy permisivo: acepta alta volatilidad
-correlation_percentile <- 0.70 # Muy permisivo: universo amplio
+n_divers_candidates <- 35
+volatility_percentile <- 0.40  # Moderado-estricto: 40% menos volátil
+correlation_percentile <- 0.60 # Moderado: acepta más universo
 
 correlation_order <- 0
 

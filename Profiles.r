@@ -9,7 +9,7 @@ weight_sharpe <- 0.15          # Rendimiento es terciario
 weight_low_vol <- 0.65         # PRIORIDAD MÁXIMA: Estabilidad
 weight_decorr <- 0.20          # Diversificación importante
 
-n_drivers_candidates <- 30
+n_divers_candidates <- 30
 volatility_percentile <- 0.25  # SUPER estricto: solo el 25% menos volátil
 correlation_percentile <- 0.50 # Estricto: solo mitad menos correlacionada
 
@@ -22,7 +22,7 @@ weight_sharpe <- 0.25          # Rendimiento empieza a importar
 weight_low_vol <- 0.50         # Estabilidad sigue siendo prioritaria
 weight_decorr <- 0.25          # Diversificación más valorada
 
-n_drivers_candidates <- 35
+n_divers_candidates <- 35
 volatility_percentile <- 0.40  # Moderado-estricto: 40% menos volátil
 correlation_percentile <- 0.60 # Moderado: acepta más universo
 # Configura el n_drivers candidate a 35
@@ -36,7 +36,7 @@ weight_sharpe <- 0.40          # PRIORIDAD: Eficiencia (Sharpe)
 weight_low_vol <- 0.35         # Volatilidad controlada pero no dominante
 weight_decorr <- 0.25          # Diversificación estándar
 
-n_drivers_candidates <- 40
+n_divers_candidates <- 40
 volatility_percentile <- 0.60  # Permisivo: acepta volatilidad media
 correlation_percentile <- 0.65 # Permisivo: amplio universo
 
@@ -49,7 +49,7 @@ weight_sharpe <- 0.50          # Rendimiento es REY
 weight_low_vol <- 0.25         # Volatilidad secundaria
 weight_decorr <- 0.25          # Diversificación táctica
 
-n_drivers_candidates <- 45
+n_divers_candidates <- 45
 volatility_percentile <- 0.75  # Muy permisivo: acepta alta volatilidad
 correlation_percentile <- 0.70 # Muy permisivo: universo amplio
 
@@ -62,7 +62,7 @@ weight_sharpe <- 0.55          # Rendimiento absoluto
 weight_low_vol <- 0.15         # Volatilidad casi irrelevante
 weight_decorr <- 0.30          # Diversificación importante (evita catástrofe)
 
-n_drivers_candidates <- 45
+n_divers_candidates <- 45
 volatility_percentile <- 0.85  # Extremadamente permisivo
 correlation_percentile <- 0.75 # Muy permisivo
 
