@@ -27,15 +27,14 @@ if ("plyr" %in% (.packages())) {
 # ============================================================================
 
 # 1. PORTAFOLIO ACTUAL
-tickers <- c("ADI", "ELV", "TLT", "MSCI", "GD", "LHX", "LMT", "FAN", "ENTG", 
-             "GOLD", "EW", "DGE.L", "NFLX", "ATO", "TJX", "PSA", "AEE", "RMD", "ISRG", 
-             "STE", "FAST")
+tickers <- c("TLT", "TJX", "FDX", "AJG", "ZTS", "KDP", "GLD", "EW", "ATO", 
+             "FFIV", "JKHY", "COR", "ABBV", "NEE", "DUK", "PEP")
 
-pesos <- c(0.101, 0.086, 0.081, 0.076, 0.072, 0.072, 0.072, 0.062, 0.05, 0.05, 
-           0.042, 0.039, 0.03, 0.025, 0.023, 0.022, 0.02, 0.02, 0.017, 0.017, 0.015)
+pesos <- c(0.142, 0.138, 0.114, 0.096, 0.086, 0.078, 0.072, 0.042, 0.036, 0.024, 
+           0.024, 0.022, 0.016, 0.016, 0.014, 0.012)
 
 # 2. TICKERS A ELIMINAR (Editable)
-tickers_eliminar <- c("NFLX", "ISRG")
+tickers_eliminar <- c("ATO")
 
 # 3. HORIZONTE TEMPORAL
 target_months <- c(2)  # Enero, Febrero (editable)
@@ -44,22 +43,22 @@ horizon_months <- length(target_months)
 horizon_label <- paste(month.abb[target_months], collapse = "-")
 
 # 4. LAMBDA (Coeficiente de aversión al riesgo)
-lambda <- 1
+lambda <- 2
 
 # 5. PARÁMETROS DE SELECCIÓN DE CANDIDATOS
 n_candidates_nasdaq <- 250     # Número de tickers a tomar del NASDAQ
-n_top_sp500 <- 200              # **NUEVO: Número de tickers a tomar del S&P 500**
+n_top_sp500 <- 250              # **NUEVO: Número de tickers a tomar del S&P 500**
 min_observations <- 5
 ideal_observations <- 8
 
-volatility_percentile <- 0.40  # Moderado-estricto: 40% menos volátil
-correlation_percentile <- 0.60 # Moderado: acepta más universo
+volatility_percentile <- 0.25  # SUPER estricto: solo el 25% menos volátil
+correlation_percentile <- 0.50 # Estricto: solo mitad menos correlacionada
 correlation_order <- 0
 
 # 6. PESOS DE SCORING
-weight_sharpe <- 0.25          # Rendimiento empieza a importar
-weight_low_vol <- 0.50         # Estabilidad sigue siendo prioritaria
-weight_decorr <- 0.25          # Diversificación más valorada
+weight_sharpe <- 0.15          # Rendimiento es terciario
+weight_low_vol <- 0.65         # PRIORIDAD MÁXIMA: Estabilidad
+weight_decorr <- 0.20          # Diversificación importante
 
 # 7. RESTRICCIONES DE PORTAFOLIO
 max_weight <- 0.12

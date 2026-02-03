@@ -27,22 +27,22 @@ n_top_int <- 50
 target_months <- c(02)
 target_years <- 2014:2025
 mdd_start_year <- 2014  
-rf_rate <- 0.095  
+rf_rate <- 0.075  
 seed <- 123
-max_weight <- 0.20
+max_weight <- 0.15
 n_sim <- 5000
 target_total_tickers <- 800
 
 # Risk Profile
-lambda <- 4  
+lambda <- 2  
 # Pesos de selección
-weight_sharpe <- 0.25          # Rendimiento empieza a importar
-weight_low_vol <- 0.50         # Estabilidad sigue siendo prioritaria
-weight_decorr <- 0.25          # Diversificación más valorada
+weight_sharpe <- 0.15          # Rendimiento es terciario
+weight_low_vol <- 0.65         # PRIORIDAD MÁXIMA: Estabilidad
+weight_decorr <- 0.20          # Diversificación importante
 
-n_divers_candidates <- 35
-volatility_percentile <- 0.40  # Moderado-estricto: 40% menos volátil
-correlation_percentile <- 0.60 # Moderado: acepta más universo
+n_divers_candidates <- 30
+volatility_percentile <- 0.25  # SUPER estricto: solo el 25% menos volátil
+correlation_percentile <- 0.50 # Estricto: solo mitad menos correlacionada
 
 correlation_order <- 0
 

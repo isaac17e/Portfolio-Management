@@ -1,6 +1,5 @@
 # Por: Isaac Echeverri
 # Rendimiento y rentabilidad con horizonte temporal extendido (1, 2 o 3 meses)
-# VERSIÓN CON OPTIMIZACIÓN COMPLETA Y RESTRICCIÓN DE PESO MÍNIMO
 rm(list = ls())
 
 library(quantmod)
@@ -18,7 +17,7 @@ today <- as.Date(fecha_cierre)
 # CONFIGURACIÓN DE HORIZONTE TEMPORAL
 # ============================================================================
 # Mes inicial de análisis
-inicio_mes <- 02  
+inicio_mes <- 01  
 
 # HORIZONTE TEMPORAL: ¿Cuántos meses analizar?
 # Opciones: 1, 2 o 3
@@ -39,11 +38,10 @@ solo_evaluar <- 1
 # ============================================================================
 
 # Portafolio nuevo propuesto
-tickers <- c("ADI", "ELV", "TLT", "MSCI", "FAN", "ENTG", "GLD", "EW", "DGE.L", 
-             "ATO", "TJX", "PSA", "AEE", "RMD", "ISRG", "STE", "FAST", "NG.L", 
-             "KDP", "FER")
-weights <- c(0.12, 0.102, 0.096, 0.09, 0.074, 0.06, 0.06, 0.05, 0.046, 
-             0.03, 0.028, 0.026, 0.024, 0.024, 0.02, 0.02, 0.018, 0.016, 0.014, 0.014)
+tickers <- c("AJG", "ABBV", "EW", "KDP", "ENTG", "FDX", "JKHY", "TJX", "NEE", 
+             "ZTS", "TLT", "GLD", "COR", "PEP", "DUK", "FFIV")
+weights <- c(0.114, 0.112, 0.108, 0.106, 0.104, 0.088, 0.088, 0.084, 0.062, 
+             0.056, 0.036, 0.016, 0.014, 0.006, 0.004, 0.002)
 
 # ============================================================================
 # ESTRATEGIA DE REBALANCEO (Solo se usa si solo_evaluar = 0)

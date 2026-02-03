@@ -6,11 +6,11 @@ library(PerformanceAnalytics)
 library(dplyr)
 library(corrplot)
 
-tickers <- c("GD", "LHX", "DB1.DE", "AMZN", "CME", "COO", "KR", "TMUS", "JKHY", 
-             "PGR", "CB", "CINF", "CTSH", "CCEP", "LMT", "GOOGL", "NOC")
+tickers <- c("AJG", "ABBV", "EW", "KDP", "ENTG", "FDX", "JKHY", "TJX", "NEE", 
+             "ZTS", "TLT", "GLD", "COR", "PEP", "DUK", "FFIV")
 
-weights <- c(0.122, 0.114, 0.1, 0.082, 0.08, 0.07, 0.062, 0.06, 0.056, 0.056, 
-             0.044, 0.04, 0.032, 0.02, 0.016, 0.12, 0.12)
+weights <- c(0.114, 0.112, 0.108, 0.106, 0.104, 0.088, 0.088, 0.084, 0.062, 
+             0.056, 0.036, 0.016, 0.014, 0.006, 0.004, 0.002)
 
 weights <- weights / sum(weights)
 
