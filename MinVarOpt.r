@@ -2,6 +2,8 @@
 # OPTIMIZACIÓN DE PORTAFOLIOS CON MINIMA VARIANZA
 # BY: Isaac Echeverri Florez
 # ==============================================================================
+rm(list = ls())
+
 library(tidyverse)
 library(tidyquant)         
 library(PortfolioAnalytics) 
