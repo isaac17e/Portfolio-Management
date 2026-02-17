@@ -21,9 +21,9 @@ library(dplyr)
 
 # === PARÁMETROS CONFIGURABLES ===
 
-n_top_nasdaq <- 350
-n_top_sp500 <- 350
-n_top_int <- 50  
+n_top_nasdaq <- 20
+n_top_sp500 <- 20
+n_top_int <- 10  
 target_months <- c(02)
 target_years <- 2014:2025
 mdd_start_year <- 2014  
@@ -31,18 +31,18 @@ rf_rate <- 0.075
 seed <- 123
 max_weight <- 0.15
 n_sim <- 5000
-target_total_tickers <- 800
+target_total_tickers <- 50
 
 # Risk Profile
-lambda <- 2  
+lambda <- 1  # Aversión al riesgo moderada-alta
 # Pesos de selección
-weight_sharpe <- 0.15          # Rendimiento es terciario
-weight_low_vol <- 0.65         # PRIORIDAD MÁXIMA: Estabilidad
-weight_decorr <- 0.20          # Diversificación importante
+weight_sharpe <- 0.25          # Rendimiento empieza a importar
+weight_low_vol <- 0.50         # Estabilidad sigue siendo prioritaria
+weight_decorr <- 0.25          # Diversificación más valorada
 
-n_divers_candidates <- 30
-volatility_percentile <- 0.25  # SUPER estricto: solo el 25% menos volátil
-correlation_percentile <- 0.50 # Estricto: solo mitad menos correlacionada
+n_divers_candidates <- 35
+volatility_percentile <- 0.40  # Moderado-estricto: 40% menos volátil
+correlation_percentile <- 0.60 # Moderado: acepta más universo
 
 correlation_order <- 0
 
@@ -170,7 +170,6 @@ international_tickers_full <- c(
 )
 
 international_tickers <- head(international_tickers_full, n_top_int)
-
 # === COMBINAR Y LIMPIAR ===
 cat("\n📊 Combinando y limpiando tickers...\n")
 
@@ -374,10 +373,9 @@ summary_stats <- df_prices %>%
     sd_return   = sd(monthly_return, na.rm = TRUE),
     n_obs       = sum(!is.na(monthly_return))
   ) %>%
-  filter(n_obs >= min_observations, sd_return > 0) %>%
+  filter(n_obs >= ideal_observations, sd_return > 0) %>%  # <-- filtro duro: ahora usa ideal, no mínimo
   mutate(
-    sharpe_ratio = (mean_return - rf_rate_period) / sd_return,
-    data_quality_penalty = pmin(n_obs / ideal_observations, 1.0)
+    sharpe_ratio = (mean_return - rf_rate_period) / sd_return
   )
 
 cat(sprintf("\n=== 📊 DIAGNÓSTICO DE COBERTURA DE DATOS (%d meses: %s) ===\n", 
@@ -445,8 +443,13 @@ if (nrow(summary_stats) > 0) {
 }
 
 # === CORRELACIONES ===
-cat("📊 Calculando matriz de correlaciones...\n")
+cat("📊 Calculando matriz de correlaciones (sobre universo filtrado)...\n")
+
+# Solo usar símbolos que pasaron el filtro de calidad de datos
+symbols_validos <- summary_stats$symbol
+
 corr_pairs <- df_prices %>%
+  filter(symbol %in% symbols_validos) %>%  
   pivot_wider(names_from = symbol, values_from = monthly_return) %>%
   select(-date) %>%
   cor(use = "pairwise.complete.obs") %>%
@@ -567,147 +570,66 @@ if (!exists("combined_stats") || nrow(combined_stats) == 0) {
 cat(sprintf("✅ combined_stats creado exitosamente: %d activos\n", nrow(combined_stats)))
 
 # === SELECCIÓN DE CANDIDATOS ===
-cat(sprintf("\n🎯 Seleccionando candidatos - PRIORIDAD: Menor SD en %d mes(es) (%s)\n", 
+cat(sprintf("\n🎯 Seleccionando candidatos - Horizonte: %d mes(es) (%s)\n", 
             horizon_months, horizon_label))
-cat(sprintf("  🔧 Modo de correlación: %s\n", 
-            ifelse(correlation_order == 1, 
-                   "Mayor a menor (alta correlación preferida)", 
-                   "Menor a mayor (baja correlación preferida)")))
+cat(sprintf("  🔧 Pesos: Sharpe=%.0f%% | Vol=%.0f%% | Corr=%.0f%%\n",
+            weight_sharpe*100, weight_low_vol*100, weight_decorr*100))
 
 select_optimal_candidates <- function(df, n_candidates) {
+  
+  # --- Filtro único: datos válidos y SD positiva ---
   df_filtered <- df %>%
     dplyr::filter(
-      n_obs >= min_observations,
       sd_return > 0,
       !is.na(sharpe_ratio_adjusted),
       is.finite(sharpe_ratio_adjusted)
     )
   
-  cat(sprintf("  ✓ Activos con datos válidos (≥%d obs): %d\n", 
-              min_observations, nrow(df_filtered)))
+  cat(sprintf("  ✓ Activos que entran al scoring: %d\n", nrow(df_filtered)))
   
-  sd_threshold <- quantile(df_filtered$sd_return, volatility_percentile, na.rm = TRUE)
-  df_low_vol <- df_filtered %>%
-    dplyr::filter(sd_return <= sd_threshold)
-  
-  cat(sprintf("  ✓ Activos con SD <= %.4f (P%.0f): %d\n", 
-              sd_threshold, volatility_percentile*100, nrow(df_low_vol)))
-  
-  cor_threshold <- quantile(df_filtered$avg_cor, correlation_percentile, na.rm = TRUE)
-  
-  if (correlation_order == 1) {
-    df_decorr <- df_filtered %>%
-      dplyr::filter(avg_cor >= cor_threshold)
-    cat(sprintf("  ✓ Activos con Corr >= %.3f (P%.0f - más correlacionados): %d\n", 
-                cor_threshold, correlation_percentile*100, nrow(df_decorr)))
-  } else {
-    df_decorr <- df_filtered %>%
-      dplyr::filter(avg_cor <= cor_threshold)
-    cat(sprintf("  ✓ Activos con Corr <= %.3f (P%.0f - menos correlacionados): %d\n", 
-                cor_threshold, correlation_percentile*100, nrow(df_decorr)))
-  }
-  
-  if (correlation_order == 1) {
-    df_candidates <- df_filtered %>%
-      dplyr::filter(
-        sd_return <= sd_threshold,
-        avg_cor >= cor_threshold
-      )
-  } else {
-    df_candidates <- df_filtered %>%
-      dplyr::filter(
-        sd_return <= sd_threshold,
-        avg_cor <= cor_threshold
-      )
-  }
-  
-  cat(sprintf("  ✓ Activos que cumplen ambos criterios: %d\n", nrow(df_candidates)))
-  
-  if (nrow(df_candidates) < n_candidates * 0.5) {
-    cat("  ⚠️ Pocos candidatos. Relajando filtros...\n")
-    
-    sd_threshold <- quantile(df_filtered$sd_return, 0.75, na.rm = TRUE)
-    cor_threshold <- quantile(df_filtered$avg_cor, 0.80, na.rm = TRUE)
-    
-    if (correlation_order == 1) {
-      df_candidates <- df_filtered %>%
-        dplyr::filter(
-          sd_return <= sd_threshold,
-          avg_cor >= cor_threshold
-        )
-    } else {
-      df_candidates <- df_filtered %>%
-        dplyr::filter(
-          sd_return <= sd_threshold,
-          avg_cor <= cor_threshold
-        )
-    }
-    
-    cat(sprintf("  ✓ Con filtros relajados: %d candidatos\n", nrow(df_candidates)))
-  }
-  
-  df_candidates <- df_candidates %>%
+  # --- Normalización de las tres métricas a [0,1] ---
+  df_scored <- df_filtered %>%
     dplyr::mutate(
-      sharpe_norm = (sharpe_ratio_adjusted - min(sharpe_ratio_adjusted, na.rm = TRUE)) / 
+      sharpe_norm = (sharpe_ratio_adjusted - min(sharpe_ratio_adjusted, na.rm = TRUE)) /
         (max(sharpe_ratio_adjusted, na.rm = TRUE) - min(sharpe_ratio_adjusted, na.rm = TRUE)),
-      vol_norm = 1 - (sd_return - min(sd_return, na.rm = TRUE)) / 
-        (max(sd_return, na.rm = TRUE) - min(sd_return, na.rm = TRUE))
-    )
-  
-  if (correlation_order == 1) {
-    df_candidates <- df_candidates %>%
-      dplyr::mutate(
-        corr_norm = (avg_cor - min(avg_cor, na.rm = TRUE)) / 
+      
+      vol_norm = 1 - (sd_return - min(sd_return, na.rm = TRUE)) /
+        (max(sd_return, na.rm = TRUE) - min(sd_return, na.rm = TRUE)),
+      
+      corr_norm = if (correlation_order == 1) {
+        (avg_cor - min(avg_cor, na.rm = TRUE)) /
           (max(avg_cor, na.rm = TRUE) - min(avg_cor, na.rm = TRUE))
-      )
-  } else {
-    df_candidates <- df_candidates %>%
-      dplyr::mutate(
-        corr_norm = 1 - (avg_cor - min(avg_cor, na.rm = TRUE)) / 
+      } else {
+        1 - (avg_cor - min(avg_cor, na.rm = TRUE)) /
           (max(avg_cor, na.rm = TRUE) - min(avg_cor, na.rm = TRUE))
-      )
-  }
-  
-  df_candidates <- df_candidates %>%
+      }
+    ) %>%
     dplyr::mutate(
       sharpe_norm = ifelse(is.nan(sharpe_norm), 0.5, sharpe_norm),
-      vol_norm = ifelse(is.nan(vol_norm), 0.5, vol_norm),
-      corr_norm = ifelse(is.nan(corr_norm), 0.5, corr_norm)
+      vol_norm    = ifelse(is.nan(vol_norm),    0.5, vol_norm),
+      corr_norm   = ifelse(is.nan(corr_norm),   0.5, corr_norm)
     )
   
-  df_candidates <- df_candidates %>%
+  # --- Score compuesto: tus pesos tienen efecto real ahora ---
+  df_scored <- df_scored %>%
     dplyr::mutate(
-      composite_score_raw = 
-        weight_sharpe * sharpe_norm +
-        weight_low_vol * vol_norm +
-        weight_decorr * corr_norm,
-      composite_score = composite_score_raw * data_quality_penalty
+      composite_score = weight_sharpe  * sharpe_norm +
+        weight_low_vol * vol_norm    +
+        weight_decorr  * corr_norm
     ) %>%
     dplyr::arrange(desc(composite_score))
   
-  n_to_select <- min(n_candidates, nrow(df_candidates))
-  selected <- df_candidates$symbol[1:n_to_select]
+  # --- Selección final ---
+  n_to_select <- min(n_candidates, nrow(df_scored))
+  selected    <- df_scored$symbol[1:n_to_select]
   
-  n_top_show <- min(10, nrow(df_candidates))
-  top_selected <- df_candidates[1:n_top_show, ] %>%
-    dplyr::select(symbol, sharpe_ratio_adjusted, sd_return, avg_cor, 
-                  n_obs, data_quality_penalty, composite_score)
+  n_top_show  <- min(10, nrow(df_scored))
+  top_selected <- df_scored[1:n_top_show, ] %>%
+    dplyr::select(symbol, sharpe_ratio_adjusted, sd_return, avg_cor,
+                  n_obs, composite_score)
   
   cat("\n  📋 Top 10 activos seleccionados:\n")
   print(top_selected, n = 10)
-  
-  penalized_tickers <- df_candidates %>%
-    dplyr::filter(data_quality_penalty < 1.0) %>%
-    dplyr::filter(symbol %in% selected)
-  
-  if (nrow(penalized_tickers) > 0) {
-    cat(sprintf("\n  ⚠️ %d tickers en portafolio con penalización por datos limitados:\n", 
-                nrow(penalized_tickers)))
-    print(penalized_tickers %>% 
-            dplyr::select(symbol, n_obs, data_quality_penalty) %>% 
-            dplyr::arrange(data_quality_penalty), 
-          n = nrow(penalized_tickers))
-  }
   
   return(selected)
 }
@@ -1324,7 +1246,7 @@ cat(sprintf("\n=== 📊 CALIDAD DE DATOS EN PORTAFOLIO FINAL ===\n"))
 
 portfolio_data_quality <- combined_stats %>%
   dplyr::filter(symbol %in% tickers_portfolio) %>%
-  dplyr::select(symbol, n_obs, data_quality_penalty, sharpe_ratio_adjusted, sd_return) %>%
+  dplyr::select(symbol, n_obs, sharpe_ratio_adjusted, sd_return) %>%
   dplyr::left_join(pesos, by = "symbol") %>%
   dplyr::arrange(desc(weight))
 
@@ -1333,21 +1255,15 @@ cat(sprintf("  Activos con datos ideales (≥%d obs): %d (%.1f%%)\n",
             ideal_observations,
             sum(portfolio_data_quality$n_obs >= ideal_observations),
             100 * mean(portfolio_data_quality$n_obs >= ideal_observations)))
-cat(sprintf("  Activos con penalización: %d (%.1f%%)\n", 
-            sum(portfolio_data_quality$data_quality_penalty < 1.0),
-            100 * mean(portfolio_data_quality$data_quality_penalty < 1.0)))
 
-if (any(portfolio_data_quality$data_quality_penalty < 1.0)) {
-  cat("\n  📋 Detalle de activos con datos limitados:\n")
-  limited_data <- portfolio_data_quality %>%
-    dplyr::filter(data_quality_penalty < 1.0) %>%
-    dplyr::mutate(
-      weight_pct = sprintf("%.2f%%", weight * 100),
-      penalty_pct = sprintf("%.1f%%", data_quality_penalty * 100)
-    ) %>%
-    dplyr::select(Symbol = symbol, Peso = weight_pct, Obs = n_obs, 
-                  Penalizacion = penalty_pct, Sharpe = sharpe_ratio_adjusted)
-  
-  print(as.data.frame(limited_data), row.names = FALSE)
-}
+cat("\n  📋 Detalle del portafolio final:\n")
+resumen_final <- portfolio_data_quality %>%
+  dplyr::mutate(
+    weight_pct = sprintf("%.2f%%", weight * 100),
+    sd_pct     = sprintf("%.4f%%", sd_return * 100)
+  ) %>%
+  dplyr::select(Symbol = symbol, Peso = weight_pct, Obs = n_obs,
+                SD = sd_pct, Sharpe = sharpe_ratio_adjusted)
+
+print(as.data.frame(resumen_final), row.names = FALSE)
 cat("\n✅ Script completado con éxito!\n")
