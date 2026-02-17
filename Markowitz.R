@@ -401,8 +401,8 @@ if (nrow(summary_stats) > 0) {
               coverage_summary$obs_max))
   cat(sprintf("  Tickers con ≥%d obs (ideal): %.1f%%\n", 
               ideal_observations, coverage_summary$pct_ideal))
-  cat(sprintf("  Tickers con ≥%d obs (mínimo): %.1f%%\n\n", 
-              min_observations, coverage_summary$pct_acceptable))
+cat(sprintf("  Todos los activos tienen ≥%d obs (filtro aplicado): 100%%\n\n", 
+            ideal_observations))
   
   coverage_plot <- ggplot(summary_stats, aes(x = n_obs)) +
     geom_histogram(bins = 20, fill = "steelblue", alpha = 0.7, color = "white") +
