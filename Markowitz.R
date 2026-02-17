@@ -21,9 +21,9 @@ library(dplyr)
 
 # === PARÁMETROS CONFIGURABLES ===
 
-n_top_nasdaq <- 20
-n_top_sp500 <- 20
-n_top_int <- 10  
+n_top_nasdaq <- 200
+n_top_sp500 <- 200
+n_top_int <- 50  
 target_months <- c(02)
 target_years <- 2014:2025
 mdd_start_year <- 2014  
@@ -31,7 +31,7 @@ rf_rate <- 0.075
 seed <- 123
 max_weight <- 0.15
 n_sim <- 5000
-target_total_tickers <- 50
+target_total_tickers <- 500
 
 # Risk Profile
 lambda <- 1  # Aversión al riesgo moderada-alta
@@ -373,7 +373,7 @@ summary_stats <- df_prices %>%
     sd_return   = sd(monthly_return, na.rm = TRUE),
     n_obs       = sum(!is.na(monthly_return))
   ) %>%
-  filter(n_obs >= ideal_observations, sd_return > 0) %>%  # <-- filtro duro: ahora usa ideal, no mínimo
+  filter(n_obs >= ideal_observations, sd_return > 0) %>%  # <-- filtro duro: usa ideal, no mínimo
   mutate(
     sharpe_ratio = (mean_return - rf_rate_period) / sd_return
   )
@@ -401,8 +401,8 @@ if (nrow(summary_stats) > 0) {
               coverage_summary$obs_max))
   cat(sprintf("  Tickers con ≥%d obs (ideal): %.1f%%\n", 
               ideal_observations, coverage_summary$pct_ideal))
-  cat(sprintf("  Tickers con ≥%d obs (mínimo): %.1f%%\n\n", 
-              min_observations, coverage_summary$pct_acceptable))
+  cat(sprintf("  Todos los activos tienen ≥%d obs (filtro aplicado): 100%%\n\n", 
+              ideal_observations))
   
   coverage_plot <- ggplot(summary_stats, aes(x = n_obs)) +
     geom_histogram(bins = 20, fill = "steelblue", alpha = 0.7, color = "white") +
