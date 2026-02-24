@@ -22,8 +22,8 @@ library(httr)
 # ==============================================================================
 
 # SELECCIÓN DE UNIVERSO DE INVERSIÓN
-n_top_sp500  <- 100
-n_top_nasdaq <- 100
+n_top_sp500  <- 220
+n_top_nasdaq <- 220
 benchmark    <- "SPY"
 
 # HORIZONTE DE DATOS HISTÓRICOS
@@ -31,20 +31,20 @@ start_date <- "2020-01-01"   # Inicio amplio para cálculos sólidos
 end_date   <- Sys.Date()     # Siempre hasta hoy
 
 #   Tres meses: target_month <- c(1, 2, 3)
-target_month <- c(1)
+target_month <- c(2, 3, 4)
 
 # PARÁMETROS FINANCIEROS
-risk_free_rate <- 0.04
+risk_free_rate <- 0.075
 
 # PERFIL DE RIESGO DEL INVERSOR
-weight_sharpe <- 0.50          # Rendimiento es REY
-weight_low_vol <- 0.25         # Volatilidad secundaria
-weight_decorr <- 0.25          # Diversificación táctica
+weight_sharpe <- 0.25          # Rendimiento empieza a importar
+weight_low_vol <- 0.50         # Estabilidad sigue siendo prioritaria
+weight_decorr <- 0.25          # Diversificación más valorada
 
 n_divers_candidates <- 20
-volatility_percentile <- 0.75  # Muy permisivo: acepta alta volatilidad
-correlation_percentile <- 0.70 # Muy permisivo: universo amplio
-max_assets_in_portfolio <- 9      # Máximo de activos en el portafolio final
+volatility_percentile <- 0.40  # Moderado-estricto: 40% menos volátil
+correlation_percentile <- 0.60 # Moderado: acepta más universo
+max_assets_in_portfolio <- 12      # Máximo de activos en el portafolio final
 
 # RESTRICCIONES DE PONDERACIÓN
 max_weight_per_asset <- 0.20
@@ -644,11 +644,9 @@ cat(paste("[INFO] Frontera eficiente calculada con", nrow(efficient_frontier), "
 extract_metrics <- function(opt_obj, label) {
   w_raw <- extractWeights(opt_obj)
   
-  # Alinear al subconjunto actual de log_returns_selected
   common <- intersect(names(w_raw), colnames(log_returns_selected))
   w      <- w_raw[common]
   
-  # Reindexar mean_ret y cov_mat al mismo subconjunto
   mr  <- mean_ret[common]
   cm  <- cov_mat[common, common]
   ret_mat <- log_returns_selected[, common]
@@ -664,10 +662,19 @@ extract_metrics <- function(opt_obj, label) {
                       order.by = index(ret_mat))
   mdd <- maxDrawdown(port_returns)
   
+  # --- SORTINO ---
+  rf_daily       <- risk_free_rate / 252
+  excess_returns <- as.numeric(port_returns) - rf_daily
+  downside_ret   <- excess_returns[excess_returns < 0]
+  downside_dev   <- sqrt(mean(downside_ret^2)) * sqrt(252)  # Downside deviation anualizada
+  sortino        <- (ret - risk_free_rate) / downside_dev
+  # ----------------
+  
   list(Label         = label,
        Return        = ret,
        Risk          = risk,
        Sharpe        = sharpe,
+       Sortino       = sortino,
        MaxDrawdown   = mdd,
        Weights       = w,
        Total_Weight  = total_weight,
@@ -818,6 +825,7 @@ summary_table <- data.frame(
   Métrica = c("Retorno Esperado (Anual)",
               "Volatilidad (Anual)",
               "Ratio de Sharpe",
+              "Ratio de Sortino",       
               "Maximum Drawdown",
               "Peso Total Invertido",
               "Posición en Efectivo"),
@@ -825,6 +833,7 @@ summary_table <- data.frame(
     percent(metrics_minvar$Return,       accuracy = 0.01),
     percent(metrics_minvar$Risk,         accuracy = 0.01),
     round(metrics_minvar$Sharpe,         3),
+    round(metrics_minvar$Sortino,         3),           
     percent(metrics_minvar$MaxDrawdown,  accuracy = 0.01),
     percent(metrics_minvar$Total_Weight, accuracy = 0.01),
     percent(metrics_minvar$Cash_Position,accuracy = 0.01)
