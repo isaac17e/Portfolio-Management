@@ -21,33 +21,32 @@ library(dplyr)
 
 # === PARÁMETROS CONFIGURABLES ===
 
-n_top_nasdaq <- 200
-n_top_sp500 <- 200
-n_top_int <- 50  
+n_top_nasdaq <- 100
+n_top_sp500 <- 100
+n_top_int <- 20  
 target_months <- c(02)
 target_years <- 2014:2025
 mdd_start_year <- 2014  
 rf_rate <- 0.075  
 seed <- 123
 max_weight <- 0.15
-n_sim <- 5000
-target_total_tickers <- 500
+target_total_tickers <- 230
 
 # Risk Profile
-lambda <- 1  # Aversión al riesgo moderada-alta
+lambda <- 4  # Balance equilibrado riesgo-retorno
 # Pesos de selección
-weight_sharpe <- 0.25          # Rendimiento empieza a importar
-weight_low_vol <- 0.50         # Estabilidad sigue siendo prioritaria
-weight_decorr <- 0.25          # Diversificación más valorada
+weight_sharpe <- 0.40          # PRIORIDAD: Eficiencia (Sharpe)
+weight_low_vol <- 0.35         # Volatilidad controlada pero no dominante
+weight_decorr <- 0.25          # Diversificación estándar
 
-n_divers_candidates <- 35
-volatility_percentile <- 0.40  # Moderado-estricto: 40% menos volátil
-correlation_percentile <- 0.60 # Moderado: acepta más universo
+n_divers_candidates <- 40
+volatility_percentile <- 0.60  # Permisivo: acepta volatilidad media
+correlation_percentile <- 0.65 # Permisivo: amplio universo
 
 correlation_order <- 0
 
-min_observations <- 10
-ideal_observations <- 15
+min_observations <- 15
+ideal_observations <- 10
 
 # === VALIDACIÓN DE PARÁMETROS ===
 if (length(target_months) < 1 || length(target_months) > 3) {
@@ -667,46 +666,172 @@ if (any(!is.finite(cov_mat))) {
 }
 
 # === ESPECIFICACIÓN DE PORTAFOLIO ===
-cat("⚙️ Configurando portafolio con utilidad cuadrática...\n")
+cat("⚙️ Configurando portafolio con utilidad cuadrática (ROI)...\n")
 
 etf_commodity_assets <- which(assets %in% c(etf_tickers, commodity_tickers))
 stock_assets <- which(!assets %in% c(etf_tickers, commodity_tickers))
 
-portf <- portfolio.spec(assets = assets) %>%
-  add.constraint(type = "weight_sum", min_sum = 1, max_sum = 1) %>%
-  add.constraint(type = "box", min = 0, max = max_weight)
+n      <- length(assets)
+Dmat   <- lambda * cov_mat          # Hessiano: λ * Σ (factor 2 lo maneja quadprog internamente)
+dvec   <- mu                        # Vector lineal: retornos esperados
 
+# === CONSTRUCCIÓN DE RESTRICCIONES ===
+# 1. Long-only: w_i >= 0
+A_long  <- diag(n)
+b_long  <- rep(0, n)
+
+# 2. Suma de pesos = 1 (full investment)
+A_sum   <- matrix(rep(1, n), nrow = n)
+b_sum   <- 1
+
+# 3. Peso máximo por activo: w_i <= max_weight
+A_max   <- -diag(n)
+b_max   <- rep(-max_weight, n)
+
+# 4. Restricciones de grupo (ETFs/commodities vs acciones)
 if (length(etf_commodity_assets) > 0 && length(stock_assets) > 0) {
-  portf <- portf %>%
-    add.constraint(type = "group", 
-                   groups = list(etf_commodity_assets, stock_assets),
-                   group_min = c(0.05, 0.40),
-                   group_max = c(0.50, 1.00))
+  
+  # Grupo ETF+Commodity: suma >= 0.05
+  A_etf_min          <- rep(0, n)
+  A_etf_min[etf_commodity_assets] <- 1
+  
+  # Grupo ETF+Commodity: suma <= 0.50
+  A_etf_max          <- rep(0, n)
+  A_etf_max[etf_commodity_assets] <- -1
+  
+  # Grupo Acciones: suma >= 0.40
+  A_stk_min          <- rep(0, n)
+  A_stk_min[stock_assets] <- 1
+  
+  # Grupo Acciones: suma <= 1.00 (redundante con long-only pero explícita)
+  A_stk_max          <- rep(0, n)
+  A_stk_max[stock_assets] <- -1
+  
+  Amat <- cbind(A_sum, A_long, A_max, 
+                A_etf_min, A_etf_max, 
+                A_stk_min, A_stk_max)
+  
+  bvec <- c(b_sum, b_long, b_max,
+            0.05, -0.50,
+            0.40, -1.00)
+  
+  meq <- 1  # Solo la primera restricción (suma = 1) es igualdad
+  
+  cat(sprintf("  ✓ Restricciones de grupo activas: ETFs [5%%-50%%] | Acciones [40%%-100%%]\n"))
+  
+} else {
+  
+  Amat <- cbind(A_sum, A_long, A_max)
+  bvec <- c(b_sum, b_long, b_max)
+  meq  <- 1
+  
+  cat("  ⚠️ Sin restricciones de grupo (todos los activos del mismo tipo)\n")
 }
 
-portf <- portf %>%
-  add.objective(type = "return", name = "mean") %>%
-  add.objective(type = "risk", name = "var", risk_aversion = lambda)
+cat(sprintf("  ✓ Activos: %d | Restricciones totales: %d\n", n, ncol(Amat)))
 
-# === OPTIMIZACIÓN ===
-cat(sprintf("🚀 Ejecutando optimización con λ=%.2f y %d simulaciones...\n", lambda, n_sim))
-set.seed(seed)
-opt <- optimize.portfolio(
-  R = df_xts[, assets],
-  portfolio = portf,
-  optimize_method = "random",
-  search_size = n_sim,
-  trace = FALSE
-)
+# === OPTIMIZACIÓN QP ===
+cat("🚀 Ejecutando optimización QP exacta (quadprog)...\n")
+
+opt_qp <- tryCatch({
+  quadprog::solve.QP(
+    Dmat = Dmat,
+    dvec = dvec,
+    Amat = Amat,
+    bvec = bvec,
+    meq  = meq
+  )
+}, error = function(e) {
+  cat(sprintf("❌ Error en QP: %s\n", e$message))
+  cat("   Intentando con matriz regularizada...\n")
+  
+  # Regularización mínima para garantizar positive-definite
+  Dmat_reg <- Dmat + diag(1e-8, n)
+  
+  quadprog::solve.QP(
+    Dmat = Dmat_reg,
+    dvec = dvec,
+    Amat = Amat,
+    bvec = bvec,
+    meq  = meq
+  )
+})
+
+# Extraer y limpiar pesos
+weights_opt <- opt_qp$solution
+weights_opt[weights_opt < 1e-6] <- 0          # Eliminar pesos fantasma
+weights_opt <- weights_opt / sum(weights_opt)  # Renormalizar
+names(weights_opt) <- assets
+
+cat(sprintf("✅ Optimización completada\n"))
+cat(sprintf("   Suma de pesos: %.6f\n", sum(weights_opt)))
+cat(sprintf("   Activos con peso > 1%%: %d\n", sum(weights_opt > 0.01)))
+cat(sprintf("   Peso máximo: %.2f%% (%s)\n", 
+            max(weights_opt) * 100, 
+            names(weights_opt)[which.max(weights_opt)]))
+
+# === OPTIMIZACIÓN QP ===
+cat("🚀 Ejecutando optimización QP exacta (quadprog)...\n")
+
+opt_qp <- tryCatch({
+  quadprog::solve.QP(
+    Dmat = Dmat,
+    dvec = dvec,
+    Amat = Amat,
+    bvec = bvec,
+    meq  = meq
+  )
+}, error = function(e) {
+  cat(sprintf("❌ Error en QP: %s\n", e$message))
+  cat("   Intentando con matriz regularizada...\n")
+  
+  for (reg in c(1e-6, 1e-4, 1e-3, 1e-2)) {
+    resultado <- tryCatch({
+      quadprog::solve.QP(
+        Dmat = Dmat + diag(reg, n),
+        dvec = dvec,
+        Amat = Amat,
+        bvec = bvec,
+        meq  = meq
+      )
+    }, error = function(e2) NULL)
+    
+    if (!is.null(resultado)) {
+      cat(sprintf("   ✓ Solución encontrada con regularización: %g\n", reg))
+      return(resultado)
+    }
+  }
+  stop("❌ No se pudo resolver el QP ni con regularización máxima.")
+})
+
+# Extraer y limpiar pesos
+weights_opt <- opt_qp$solution
+weights_opt[weights_opt < 1e-6] <- 0
+weights_opt <- weights_opt / sum(weights_opt)
+names(weights_opt) <- assets
+
+cat(sprintf("✅ Optimización completada\n"))
+cat(sprintf("   Suma de pesos: %.6f\n", sum(weights_opt)))
+cat(sprintf("   Activos con peso > 1%%: %d\n", sum(weights_opt > 0.01)))
+cat(sprintf("   Peso máximo: %.2f%% (%s)\n",
+            max(weights_opt) * 100,
+            names(weights_opt)[which.max(weights_opt)]))
 
 # === RESULTADOS ===
-weights_opt <- extractWeights(opt)
-ret_opt <- sum(weights_opt * mu)
-sd_opt <- sqrt(t(weights_opt) %*% cov_mat %*% weights_opt)
-sharpe_opt <- (ret_opt - rf_rate_period) / sd_opt
+ret_opt     <- sum(weights_opt * mu)
+sd_opt      <- sqrt(as.numeric(t(weights_opt) %*% cov_mat %*% weights_opt))
+sharpe_opt  <- (ret_opt - rf_rate_period) / sd_opt
 utility_opt <- ret_opt - (lambda / 2) * (sd_opt^2)
 
 portfolio_returns_full <- Return.portfolio(df_xts[, ticker_candidates], weights = weights_opt)
+
+# --- SORTINO ---
+excess_returns <- as.numeric(portfolio_returns_full) - rf_rate_period
+downside_ret   <- excess_returns[excess_returns < 0]
+downside_dev   <- sqrt(mean(downside_ret^2))
+sortino_opt    <- (ret_opt - rf_rate_period) / downside_dev
+# ----------------
+
 var_parametric <- ret_opt - qnorm(0.95) * sd_opt
 cvar_95 <- mean(portfolio_returns_full[portfolio_returns_full <= quantile(portfolio_returns_full, 0.05, na.rm = TRUE)], na.rm = TRUE)
 
@@ -714,12 +839,12 @@ benchmark_xts <- xts(benchmark_prices$benchmark_return, order.by = benchmark_pri
 df_xts_with_bench <- merge(df_xts[, ticker_candidates], benchmark = benchmark_xts, all = FALSE) %>% na.omit()
 
 ticker_cols_in_bench <- setdiff(colnames(df_xts_with_bench), "benchmark")
-benchmark_aligned <- df_xts_with_bench$benchmark
+benchmark_aligned    <- df_xts_with_bench$benchmark
 portfolio_returns_aligned <- Return.portfolio(df_xts_with_bench[, ticker_cols_in_bench], weights = weights_opt)
 
-tracking_error <- StdDev(portfolio_returns_aligned - benchmark_aligned)
+tracking_error  <- StdDev(portfolio_returns_aligned - benchmark_aligned)
 relative_returns <- portfolio_returns_aligned - benchmark_aligned
-relative_var <- mean(relative_returns, na.rm = TRUE) - qnorm(0.95) * sd(relative_returns, na.rm = TRUE)
+relative_var    <- mean(relative_returns, na.rm = TRUE) - qnorm(0.95) * sd(relative_returns, na.rm = TRUE)
 
 pesos <- tibble(symbol = names(weights_opt), weight = weights_opt) %>%
   filter(weight > 0.01) %>%
@@ -728,14 +853,15 @@ pesos <- tibble(symbol = names(weights_opt), weight = weights_opt) %>%
 cat("\n=== 📊 PORTAFOLIO ÓPTIMO (UTILIDAD CUADRÁTICA) ===\n")
 print(pesos)
 
-cat(sprintf("\n=== 📈 MÉTRICAS DEL PERÍODO (%s: %s %d-%d) ===\n", 
-            horizon_label, month.name[max(target_months)], 
+cat(sprintf("\n=== 📈 MÉTRICAS DEL PERÍODO (%s: %s %d-%d) ===\n",
+            horizon_label, month.name[max(target_months)],
             min(target_years), max(target_years)))
 cat(sprintf("  ➤ Horizonte: %d mes(es)\n", horizon_months))
 cat(sprintf("  ➤ Lambda (aversión al riesgo): %.2f\n", lambda))
 cat(sprintf("  ➤ Retorno Esperado: %.4f%%\n", ret_opt * 100))
 cat(sprintf("  ➤ Volatilidad: %.4f%%\n", sd_opt * 100))
 cat(sprintf("  ➤ Sharpe Ratio: %.4f\n", sharpe_opt))
+cat(sprintf("  ➤ Sortino Ratio: %.4f\n", sortino_opt))
 cat(sprintf("  ➤ Utilidad Cuadrática: %.6f\n", utility_opt))
 cat(sprintf("  ➤ VaR (95%%): %.4f%%\n", var_parametric * 100))
 cat(sprintf("  ➤ CVaR (95%%): %.4f%%\n", cvar_95 * 100))
@@ -746,135 +872,213 @@ annualization_factor <- 12 / horizon_months
 cat(sprintf("\n=== 📅 MÉTRICAS ANUALIZADAS (aproximadas) ===\n"))
 cat(sprintf("  ➤ Retorno anual: %.2f%%\n", ret_opt * annualization_factor * 100))
 cat(sprintf("  ➤ Volatilidad anual: %.2f%%\n", sd_opt * sqrt(annualization_factor) * 100))
+cat(sprintf("  ➤ Sharpe anualizado: %.4f\n", sharpe_opt * sqrt(annualization_factor)))
+cat(sprintf("  ➤ Sortino anualizado: %.4f\n", sortino_opt * sqrt(annualization_factor)))
 
 # === FRONTERA EFICIENTE CON UTILIDAD CUADRÁTICA ===
-cat("\n📊 Generando frontera eficiente con utilidad cuadrática...\n")
-random_weights <- random_portfolios(portf, permutations = n_sim, rp_method = "sample")
+cat("\n📊 Generando frontera eficiente con utilidad cuadrática (QP exacto)...\n")
 
-returns_vals <- apply(random_weights, 1, function(w) sum(w * mu))
-risk_vals <- apply(random_weights, 1, function(w) sqrt(t(w) %*% cov_mat %*% w))
-utility_vals <- apply(random_weights, 1, function(w) {
-  ret <- sum(w * mu)
-  vol <- sqrt(t(w) %*% cov_mat %*% w)
-  ret - (lambda / 2) * (vol^2)
-})
+min_ret_target <- min(mu)
+max_ret_target <- max(mu)
+target_returns <- seq(min_ret_target, max_ret_target, length.out = 100)
 
-frontier_df <- tibble(
-  risk = risk_vals,
-  ret = returns_vals,
-  utility = utility_vals
-) %>%
-  filter(!is.na(ret) & !is.na(risk) & !is.na(utility))
+frontier_list <- list()
 
-fv <- frontier_df %>% arrange(risk)
-efficient_points <- fv[1, , drop = FALSE]
-for (i in 2:nrow(fv)) {
-  if (!is.na(fv$ret[i]) && fv$ret[i] > max(efficient_points$ret, na.rm = TRUE)) {
-    efficient_points <- bind_rows(efficient_points, fv[i, ])
-  }
+for (i in seq_along(target_returns)) {
+  target_r <- target_returns[i]
+  
+  tryCatch({
+    A_ret <- mu
+    
+    if (length(etf_commodity_assets) > 0 && length(stock_assets) > 0) {
+      A_etf_min_f <- rep(0, n); A_etf_min_f[etf_commodity_assets] <-  1
+      A_etf_max_f <- rep(0, n); A_etf_max_f[etf_commodity_assets] <- -1
+      A_stk_min_f <- rep(0, n); A_stk_min_f[stock_assets]         <-  1
+      A_stk_max_f <- rep(0, n); A_stk_max_f[stock_assets]         <- -1
+      
+      Amat_f <- cbind(A_sum, A_long, A_max,
+                      A_etf_min_f, A_etf_max_f,
+                      A_stk_min_f, A_stk_max_f,
+                      A_ret)
+      bvec_f <- c(b_sum, b_long, b_max, 0.05, -0.50, 0.40, -1.00, target_r)
+    } else {
+      Amat_f <- cbind(A_sum, A_long, A_max, A_ret)
+      bvec_f <- c(b_sum, b_long, b_max, target_r)
+    }
+    
+    # Regularización incremental igual que en optimización principal
+    sol_f <- NULL
+    for (reg in c(0, 1e-6, 1e-4, 1e-3, 1e-2)) {
+      Dmat_f <- 2 * cov_mat + diag(reg, n)
+      sol_f <- tryCatch({
+        quadprog::solve.QP(
+          Dmat = Dmat_f,
+          dvec = rep(0, n),
+          Amat = Amat_f,
+          bvec = bvec_f,
+          meq  = 1
+        )
+      }, error = function(e) NULL)
+      if (!is.null(sol_f)) break
+    }
+    
+    if (!is.null(sol_f)) {
+      w_f <- sol_f$solution
+      w_f[w_f < 1e-6] <- 0
+      w_f <- w_f / sum(w_f)
+      
+      ret_f     <- sum(w_f * mu)
+      risk_f    <- sqrt(as.numeric(t(w_f) %*% cov_mat %*% w_f))
+      utility_f <- ret_f - (lambda / 2) * (risk_f^2)
+      
+      frontier_list[[length(frontier_list) + 1]] <- data.frame(
+        risk    = risk_f,
+        ret     = ret_f,
+        utility = utility_f
+      )
+    }
+    
+  }, error = function(e) {})
 }
 
-opt_point <- tibble(risk = sd_opt, ret = ret_opt, utility = utility_opt)
+# Verificar que haya puntos antes de continuar
+if (length(frontier_list) == 0) {
+  cat("  ⚠️ No se pudieron calcular puntos para la frontera eficiente.\n")
+  frontier_df <- data.frame(risk = numeric(), ret = numeric(), utility = numeric())
+} else {
+  frontier_df <- bind_rows(frontier_list) %>%
+    filter(!is.na(ret), !is.na(risk), !is.na(utility)) %>%
+    arrange(risk)
+  cat(sprintf("  ✓ Frontera calculada con %d puntos exactos\n", nrow(frontier_df)))
+}
 
-g <- ggplot(frontier_df, aes(x = risk, y = ret)) +
-  geom_point(aes(color = utility), alpha = 0.3, size = 1.5) +
-  scale_color_gradient2(
-    low = "#d73027", 
-    mid = "#fee08b", 
-    high = "#1a9850",
-    midpoint = median(frontier_df$utility, na.rm = TRUE),
-    name = sprintf("Utilidad\n(λ=%.1f)", lambda)
-  ) +
-  geom_line(data = efficient_points, aes(x = risk, y = ret),
-            color = "darkgreen", size = 1, linetype = "dashed") +
-  geom_point(data = opt_point, aes(x = risk, y = ret),
-             color = "red", size = 4, shape = 18) +
-  annotate("text", x = opt_point$risk, y = opt_point$ret,
-           label = sprintf("Óptimo\nU=%.4f", opt_point$utility),
-           hjust = -0.1, vjust = 1.5, size = 3.5, fontface = "bold") +
-  labs(
-    title = "Frontera Eficiente - Utilidad Cuadrática",
-    subtitle = sprintf("Horizonte: %d mes(es) (%s) | λ=%.2f | %d-%d", 
-                       horizon_months, horizon_label, lambda,
-                       min(target_years), max(target_years)),
-    x = sprintf("Riesgo (%d meses)", horizon_months),
-    y = sprintf("Retorno Esperado (%d meses)", horizon_months)
-  ) +
-  theme_minimal() +
-  theme(
-    plot.title = element_text(face = "bold", size = 14),
-    plot.subtitle = element_text(size = 10),
-    legend.position = "right"
-  )
+# Punto óptimo
+opt_point <- tibble(
+  risk    = as.numeric(sd_opt),
+  ret     = ret_opt,
+  utility = utility_opt
+)
 
-print(g)
+# Activos individuales
+asset_points <- tibble(
+  symbol = assets,
+  risk   = sqrt(diag(cov_mat)),
+  ret    = mu
+)
+
+if (nrow(frontier_df) > 0) {
+  g <- ggplot(frontier_df, aes(x = risk, y = ret)) +
+    geom_line(aes(color = utility), size = 1.8, alpha = 0.9) +
+    scale_color_gradient2(
+      low      = "#d73027",
+      mid      = "#fee08b",
+      high     = "#1a9850",
+      midpoint = median(frontier_df$utility, na.rm = TRUE),
+      name     = sprintf("Utilidad\n(λ=%.1f)", lambda)
+    ) +
+    geom_point(data = asset_points, aes(x = risk, y = ret),
+               color = "#ff7f00", size = 2.5, alpha = 0.6) +
+    geom_text(data = asset_points, aes(x = risk, y = ret, label = symbol),
+              vjust = 1.8, size = 2.5, alpha = 0.7) +
+    geom_point(data = opt_point, aes(x = risk, y = ret),
+               color = "red", size = 5, shape = 18) +
+    annotate("text",
+             x     = opt_point$risk,
+             y     = opt_point$ret,
+             label = sprintf("Óptimo\nU=%.4f", opt_point$utility),
+             hjust = -0.15, vjust = 1.5, size = 3.5, fontface = "bold") +
+    labs(
+      title    = "Frontera Eficiente - Utilidad Cuadrática (QP Exacto)",
+      subtitle = sprintf("Horizonte: %d mes(es) (%s) | λ=%.2f | %d-%d",
+                         horizon_months, horizon_label, lambda,
+                         min(target_years), max(target_years)),
+      x = sprintf("Riesgo (%d meses)", horizon_months),
+      y = sprintf("Retorno Esperado (%d meses)", horizon_months)
+    ) +
+    theme_minimal() +
+    theme(
+      plot.title      = element_text(face = "bold", size = 14),
+      plot.subtitle   = element_text(size = 10),
+      legend.position = "right"
+    )
+  
+  print(g)
+} else {
+  cat("  ⚠️ Gráfico de frontera omitido por falta de puntos válidos.\n")
+}
 
 # === COMPARACIÓN DE LAMBDAS ===
 cat("\n", rep("=", 70), "\n", sep = "")
-cat("🧪 ANÁLISIS COMPARATIVO: Portafolios por nivel de λ\n")
+cat("🧪 ANÁLISIS COMPARATIVO: Portafolios por nivel de λ (QP Exacto)\n")
 cat(rep("=", 70), "\n\n", sep = "")
 
-lambda_values <- c(0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.5, 10.0)
+lambda_values      <- c(0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.0, 7.5, 10.0)
 results_comparison <- tibble()
 
 for (lambda_test in lambda_values) {
   cat(sprintf("  Optimizando λ=%.1f... ", lambda_test))
   
-  portf_test <- portfolio.spec(assets = assets) %>%
-    add.constraint(type = "weight_sum", min_sum = 1, max_sum = 1) %>%
-    add.constraint(type = "box", min = 0, max = max_weight)
-  
-  if (length(etf_commodity_assets) > 0 && length(stock_assets) > 0) {
-    portf_test <- portf_test %>%
-      add.constraint(type = "group", 
-                     groups = list(etf_commodity_assets, stock_assets),
-                     group_min = c(0.05, 0.40),
-                     group_max = c(0.50, 1.00))
-  }
-  
-  portf_test <- portf_test %>%
-    add.objective(type = "return", name = "mean") %>%
-    add.objective(type = "risk", name = "var", risk_aversion = lambda_test)
-  
-  set.seed(seed + as.integer(lambda_test * 100))
+  Dmat_test <- lambda_test * cov_mat
   
   opt_test <- tryCatch({
-    optimize.portfolio(
-      R = df_xts[, assets],
-      portfolio = portf_test,
-      optimize_method = "random",
-      search_size = n_sim,
-      trace = FALSE
+    quadprog::solve.QP(
+      Dmat = Dmat_test,
+      dvec = dvec,
+      Amat = Amat,
+      bvec = bvec,
+      meq  = meq
     )
   }, error = function(e) {
-    cat("❌\n")
-    return(NULL)
+    # Intento con regularización
+    tryCatch({
+      quadprog::solve.QP(
+        Dmat = lambda_test * cov_mat + diag(1e-8, n),
+        dvec = dvec,
+        Amat = Amat,
+        bvec = bvec,
+        meq  = meq
+      )
+    }, error = function(e2) {
+      cat("❌\n")
+      return(NULL)
+    })
   })
   
   if (!is.null(opt_test)) {
-    w <- extractWeights(opt_test)
+    w <- opt_test$solution
+    w[w < 1e-6] <- 0
+    w <- w / sum(w)
+    names(w) <- assets
     
-    if (!all(is.na(w)) && sum(w, na.rm = TRUE) > 0.9) {
-      ret <- sum(w * mu)
-      vol <- sqrt(t(w) %*% cov_mat %*% w)
-      sharpe <- (ret - rf_rate_period) / vol
-      utility <- ret - (lambda_test / 2) * (vol^2)
+    if (sum(w, na.rm = TRUE) > 0.9) {
+      ret       <- sum(w * mu)
+      vol       <- sqrt(as.numeric(t(w) %*% cov_mat %*% w))
+      sharpe    <- (ret - rf_rate_period) / vol
+      utility   <- ret - (lambda_test / 2) * (vol^2)
       n_activos <- sum(w > 0.01)
       
+      # Sortino para cada lambda
+      port_ret_test  <- as.numeric(Return.portfolio(df_xts[, assets], weights = w))
+      excess_test    <- port_ret_test - rf_rate_period
+      downside_test  <- excess_test[excess_test < 0]
+      downside_dev_t <- sqrt(mean(downside_test^2))
+      sortino_test   <- (ret - rf_rate_period) / downside_dev_t
+      
       results_comparison <- bind_rows(results_comparison, tibble(
-        lambda = lambda_test,
-        retorno = ret * 100,
+        lambda      = lambda_test,
+        retorno     = ret * 100,
         volatilidad = vol * 100,
-        sharpe = sharpe,
-        utilidad = utility,
-        n_activos = n_activos,
-        max_peso = max(w) * 100
+        sharpe      = sharpe,
+        sortino     = sortino_test,
+        utilidad    = utility,
+        n_activos   = n_activos,
+        max_peso    = max(w) * 100
       ))
       
-      cat(sprintf("✓ R=%.2f%% | σ=%.2f%% | U=%.4f\n", 
-                  ret * 100, vol * 100, utility))
+      cat(sprintf("✓ R=%.2f%% | σ=%.2f%% | Sharpe=%.3f | Sortino=%.3f | U=%.4f\n",
+                  ret * 100, vol * 100, sharpe, sortino_test, utility))
     } else {
-      cat("⚠️\n")
+      cat("⚠️ Pesos inválidos\n")
     }
   }
 }
@@ -885,8 +1089,8 @@ if (nrow(results_comparison) > 0) {
   cat(rep("=", 70), "\n\n", sep = "")
   
   print(results_comparison %>%
-          mutate(across(c(retorno, volatilidad, sharpe, utilidad, max_peso), 
-                        ~sprintf("%.4f", .))), 
+          mutate(across(c(retorno, volatilidad, sharpe, sortino, utilidad, max_peso),
+                        ~sprintf("%.4f", .))),
         n = Inf)
   
   cat("\n📈 Visualización comparativa de lambdas...\n")
@@ -895,30 +1099,30 @@ if (nrow(results_comparison) > 0) {
     geom_path(arrow = arrow(length = unit(0.25, "cm"), type = "closed"),
               size = 1, color = "steelblue", alpha = 0.6) +
     geom_point(aes(color = utilidad, size = lambda)) +
-    geom_text(aes(label = sprintf("%.1f", lambda)),
+    geom_text(aes(label = sprintf("λ=%.1f", lambda)),
               hjust = -0.3, vjust = 0, size = 3) +
     scale_color_gradient2(
-      low = "#d73027",
-      mid = "#ffffbf",
-      high = "#1a9850",
+      low      = "#d73027",
+      mid      = "#ffffbf",
+      high     = "#1a9850",
       midpoint = median(results_comparison$utilidad),
-      name = "Utilidad"
+      name     = "Utilidad"
     ) +
     scale_size_continuous(range = c(3, 6), guide = "none") +
     labs(
-      title = "Frontera de Portafolios por Nivel de Aversión al Riesgo",
+      title    = "Frontera de Portafolios por Nivel de Aversión al Riesgo (QP Exacto)",
       subtitle = sprintf("Horizonte: %d mes(es) (%s) | %d-%d",
                          horizon_months, horizon_label,
                          min(target_years), max(target_years)),
-      x = "Volatilidad (%)",
-      y = "Retorno Esperado (%)",
+      x       = "Volatilidad (%)",
+      y       = "Retorno Esperado (%)",
       caption = "λ bajo = Agresivo | λ alto = Conservador"
     ) +
     theme_minimal() +
     theme(
-      plot.title = element_text(face = "bold", size = 13),
+      plot.title    = element_text(face = "bold", size = 13),
       plot.subtitle = element_text(size = 9),
-      plot.caption = element_text(hjust = 1, face = "italic", size = 8)
+      plot.caption  = element_text(hjust = 1, face = "italic", size = 8)
     )
   
   print(g_lambda)
@@ -929,28 +1133,27 @@ if (nrow(results_comparison) > 0) {
   
   best_row <- results_comparison %>% filter(utilidad == max(utilidad))
   
-  cat(sprintf("  λ óptimo para estos datos: %.1f\n", best_row$lambda))
+  cat(sprintf("  λ óptimo para estos datos: %.1f\n",   best_row$lambda))
   cat(sprintf("  • Retorno esperado: %.2f%% (%.1f%% anual)\n",
               best_row$retorno,
-              best_row$retorno * (12/horizon_months)))
+              best_row$retorno * (12 / horizon_months)))
   cat(sprintf("  • Volatilidad: %.2f%% (%.1f%% anual)\n",
               best_row$volatilidad,
-              best_row$volatilidad * sqrt(12/horizon_months)))
-  cat(sprintf("  • Sharpe Ratio: %.3f\n", best_row$sharpe))
+              best_row$volatilidad * sqrt(12 / horizon_months)))
+  cat(sprintf("  • Sharpe Ratio: %.3f\n",  best_row$sharpe))
+  cat(sprintf("  • Sortino Ratio: %.3f\n", best_row$sortino))
   cat(sprintf("  • Utilidad: %.4f (máxima)\n", best_row$utilidad))
   cat(sprintf("  • Activos en portafolio: %d\n", best_row$n_activos))
   
   if (abs(best_row$lambda - lambda) > 0.5) {
-    cat(sprintf("\n  ⚠️ El λ actual (%.1f) difiere del óptimo (%.1f)\n", 
+    cat(sprintf("\n  ⚠️ El λ actual (%.1f) difiere del óptimo (%.1f)\n",
                 lambda, best_row$lambda))
-    cat(sprintf("     Considera ajustar lambda <- %.1f en parámetros\n", 
+    cat(sprintf("     Considera ajustar lambda <- %.1f en parámetros\n",
                 best_row$lambda))
   } else {
     cat(sprintf("\n  ✅ El λ actual (%.1f) está cerca del óptimo\n", lambda))
   }
 }
-
-cat("\n✅ Optimización completada exitosamente\n")
 
 # === 🆕 ANÁLISIS DE MDD DEL PORTAFOLIO ===
 cat(sprintf("\n\n=== 📉 ANÁLISIS DE MAXIMUM DRAWDOWN DEL PORTAFOLIO ===\n"))
