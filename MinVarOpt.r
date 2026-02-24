@@ -23,7 +23,7 @@ library(httr)
 
 # SELECCIÓN DE UNIVERSO DE INVERSIÓN
 n_top_sp500  <- 220
-n_top_nasdaq <- 220
+n_top_nasdaq <- 120
 benchmark    <- "SPY"
 
 # HORIZONTE DE DATOS HISTÓRICOS
