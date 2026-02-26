@@ -21,32 +21,29 @@ library(dplyr)
 
 # === PARÁMETROS CONFIGURABLES ===
 
-n_top_nasdaq <- 100
-n_top_sp500 <- 100
-n_top_int <- 20  
-target_months <- c(02)
+n_top_nasdaq <- 350
+n_top_sp500 <- 350
+n_top_int <- 40  
+target_months <- c(02, 03, 04)
 target_years <- 2014:2025
 mdd_start_year <- 2014  
 rf_rate <- 0.075  
 seed <- 123
 max_weight <- 0.15
-target_total_tickers <- 230
+target_total_tickers <- 750
 
 # Risk Profile
-lambda <- 4  # Balance equilibrado riesgo-retorno
+lambda <- 1  # Aversión al riesgo moderada-alta
 # Pesos de selección
-weight_sharpe <- 0.40          # PRIORIDAD: Eficiencia (Sharpe)
-weight_low_vol <- 0.35         # Volatilidad controlada pero no dominante
-weight_decorr <- 0.25          # Diversificación estándar
+weight_sharpe <- 0.25          # Rendimiento empieza a importar
+weight_low_vol <- 0.50         # Estabilidad sigue siendo prioritaria
+weight_decorr <- 0.25          # Diversificación más valorada
 
-n_divers_candidates <- 40
-volatility_percentile <- 0.60  # Permisivo: acepta volatilidad media
-correlation_percentile <- 0.65 # Permisivo: amplio universo
-
+n_divers_candidates <- 35
 correlation_order <- 0
 
-min_observations <- 15
-ideal_observations <- 10
+min_observations <- 10
+ideal_observations <- 15
 
 # === VALIDACIÓN DE PARÁMETROS ===
 if (length(target_months) < 1 || length(target_months) > 3) {
