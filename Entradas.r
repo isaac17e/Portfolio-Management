@@ -1,17 +1,17 @@
 # ================================
-# Criterios de entrada para portafolio DIARIO (versión simplificada)
-# Entries by Isaac Echeverri - Optimizado
-# ================================
+# Criterios de entrada para portafolio DIARIO (v2 - optimizado)
+# Entries by Isaac Echeverri
 rm(list = ls())
 library(quantmod)
 library(TTR)
 library(dplyr)
+library(zoo)
 
-tickers <- c("GD", "LHX", "DB1.DE", "AMZN", "CME", "COO", "KR", "ESLT", "FER", 
-             "PGR", "CB", "NG.L", "CTSH", "CCEP", "LMT", "GOOGL", "NOC")
+tickers <- c("EVRG", "COR", "BMY", "AMGN", "MCK", "VZ", "LMT", "WM",
+             "NEE", "JNJ", "NOC")
 
 fecha_final <- Sys.Date()
-fecha_inicio <- fecha_final - 180  # 6 meses
+fecha_inicio <- fecha_final - 365  # 12 meses para percentiles más estables
 
 evaluar_entrada <- function(ticker) {
   tryCatch({
@@ -23,21 +23,19 @@ evaluar_entrada <- function(ticker) {
                                          auto.assign = FALSE,
                                          periodicity = "daily"))
     
-    if (is.null(datos) || nrow(datos) < 50) {
+    if (is.null(datos) || nrow(datos) < 60) {
       stop("Datos insuficientes")
     }
     
     precio_cierre <- Cl(datos)
-    volumen <- Vo(datos)
+    volumen       <- Vo(datos)
     
-    # Indicadores
-    rsi <- RSI(precio_cierre, n = 14)
+    # ── Indicadores ─────────────────────────────────────────────────────────
+    rsi    <- RSI(precio_cierre, n = 14)
     adx_calc <- ADX(HLC(datos), n = 14)
-    adx <- adx_calc[, "ADX"]
-    ema10 <- EMA(precio_cierre, n = 10)
-    macd_calc <- MACD(precio_cierre, nFast = 8, nSlow = 17, nSig = 9)
-    macd <- macd_calc[, "macd"]
-    signal <- macd_calc[, "signal"]
+    adx    <- adx_calc[, "ADX"]
+    ema9   <- EMA(precio_cierre, n = 9)   # antes EMA10
+    ema21  <- EMA(precio_cierre, n = 21)  # reemplaza MACD como filtro de tendencia
     vol_ma <- SMA(volumen, n = 20)
     
     # Momentum de volumen (últimos 5 días vs anteriores 5)
@@ -45,91 +43,108 @@ evaluar_entrada <- function(ticker) {
     vol_anterior <- lag(vol_reciente, 5)
     vol_momentum <- vol_reciente / vol_anterior
     
-    # Combinar
-    todos <- cbind(precio_cierre, rsi, adx, ema10, macd, signal, 
-                   volumen, vol_ma, vol_momentum)
-    colnames(todos) <- c("Cierre", "RSI14", "ADX14", "EMA10", 
-                         "MACD", "Signal", "Volumen", "VolMA20", "VolMomentum")
+    # RSI momentum: ¿el RSI de hoy es mayor que hace 3 barras? (impulso alcista)
+    rsi_momentum <- rsi - lag(rsi, 3)
+    
+    # Combinar todo
+    todos <- cbind(precio_cierre, rsi, adx, ema9, ema21,
+                   volumen, vol_ma, vol_momentum, rsi_momentum)
+    colnames(todos) <- c("Cierre", "RSI14", "ADX14", "EMA9", "EMA21",
+                         "Volumen", "VolMA20", "VolMomentum", "RSI_Mom")
     
     todos <- na.omit(todos)
     
     if (nrow(todos) < 2) stop("Datos insuficientes tras indicadores")
     
-    ultimo <- tail(todos, 1)
+    ultimo    <- tail(todos, 1)
+    penultimo <- tail(todos, 2)[1, ]  # barra anterior (para detectar cruces)
     
-    cierre <- as.numeric(ultimo[1, "Cierre"])
-    rsi_v <- as.numeric(ultimo[1, "RSI14"])
-    adx_v <- as.numeric(ultimo[1, "ADX14"])
-    ema10_v <- as.numeric(ultimo[1, "EMA10"])
-    macd_v <- as.numeric(ultimo[1, "MACD"])
-    signal_v <- as.numeric(ultimo[1, "Signal"])
-    vol_actual <- as.numeric(ultimo[1, "Volumen"])
-    vol_prom <- as.numeric(ultimo[1, "VolMA20"])
-    vol_mom <- as.numeric(ultimo[1, "VolMomentum"])
+    cierre     <- as.numeric(ultimo[, "Cierre"])
+    rsi_v      <- as.numeric(ultimo[, "RSI14"])
+    adx_v      <- as.numeric(ultimo[, "ADX14"])
+    ema9_v     <- as.numeric(ultimo[, "EMA9"])
+    ema21_v    <- as.numeric(ultimo[, "EMA21"])
+    vol_actual <- as.numeric(ultimo[, "Volumen"])
+    vol_prom   <- as.numeric(ultimo[, "VolMA20"])
+    vol_mom    <- as.numeric(ultimo[, "VolMomentum"])
+    rsi_mom_v  <- as.numeric(ultimo[, "RSI_Mom"])
     
-    # Umbral ADX dinámico (percentil 30 histórico)
+    ema9_ant  <- as.numeric(penultimo[, "EMA9"])
+    ema21_ant <- as.numeric(penultimo[, "EMA21"])
+    
+    # Umbral ADX dinámico (percentil 35 histórico — ligeramente más exigente)
     adx_historico <- as.numeric(na.omit(todos[, "ADX14"]))
-    umbral_adx <- quantile(adx_historico, 0.30, na.rm = TRUE)
+    umbral_adx    <- quantile(adx_historico, 0.35, na.rm = TRUE)
     
-    # ===== 5 CONDICIONES =====
-    cond1 <- cierre > ema10_v                                          # Precio sobre EMA10
-    cond2 <- rsi_v < 65                                                 # RSI no sobrecomprado
-    cond3 <- macd_v > signal_v                                          # MACD positivo
-    cond4 <- adx_v > umbral_adx                                          # Tendencia fuerte relativa
-    cond5 <- (vol_actual > vol_prom * 0.7) && (vol_mom > 1.0)           # Volumen saludable
+    # ── 6 CONDICIONES con peso ───────────────────────────────────────────────
+    cond1 <- cierre > ema9_v                                             # precio sobre EMA9
+    cond2 <- ema9_v > ema21_v                                            # EMA9 sobre EMA21 (tendencia)
+    cond3 <- (ema9_v > ema21_v) && (ema9_ant <= ema21_ant)               # cruce alcista reciente
+    cond4 <- rsi_v >= 45 && rsi_v <= 68                                  # zona RSI saludable
+    cond5 <- rsi_mom_v > 0                                               # RSI ganando impulso
+    cond6 <- (vol_actual > vol_prom * 0.7) && (vol_mom > 1.0) &&
+      (adx_v > umbral_adx)                                        # fuerza + participación
     
-    condiciones_cumplidas <- sum(c(cond1, cond2, cond3, cond4, cond5))
+    puntaje <- sum(c(
+      cond1 * 1.0,
+      cond2 * 1.5,
+      cond3 * 2.0,
+      cond4 * 1.0,
+      cond5 * 0.5,
+      cond6 * 1.0
+    ))
     
-    decision <- ifelse(condiciones_cumplidas >= 4, "✅ ENTRAR FUERTE",
-                       ifelse(condiciones_cumplidas == 3, "⚠️ ENTRAR CAUTELOSO",
+    # Número de condiciones booleanas cumplidas (para referencia)
+    condiciones_cumplidas <- sum(c(cond1, cond2, cond3, cond4, cond5, cond6))
+    
+    decision <- ifelse(puntaje >= 5.0, "✅ ENTRAR FUERTE",
+                       ifelse(puntaje >= 3.0, "⚠️ ENTRAR CAUTELOSO",
                               "❌ ESPERAR"))
     
-    # Señales visuales simplificadas
+    # Señales visuales
     senales <- paste0(
-      ifelse(cond1, "↗️", "↘️"), " ",
-      ifelse(cond3, "🚀", "🐌"), " ",
-      ifelse(cond4, "💪", "😴"), " ",
-      ifelse(cond5, "📊", "📉")
+      ifelse(cond1, "↗️",  "↘️"),  " ",  # precio vs EMA9
+      ifelse(cond2, "📈",  "📉"),  " ",  # EMA9 vs EMA21
+      ifelse(cond3, "⚡",  "·"),   " ",  # cruce reciente
+      ifelse(cond4, "🎯",  "⚠️"),  " ",  # RSI zona
+      ifelse(cond5, "🔥",  "❄️"),  " ",  # RSI momentum
+      ifelse(cond6, "💪",  "😴")         # fuerza + volumen
     )
     
     cat(" ✓\n")
     
     data.frame(
-      Ticker = ticker,
-      Fecha = as.character(index(ultimo)),
-      Cierre = round(cierre, 2),
-      RSI14 = round(rsi_v, 1),
-      ADX14 = round(adx_v, 1),
+      Ticker     = ticker,
+      Fecha      = as.character(index(ultimo)),
+      Cierre     = round(cierre, 2),
+      RSI14      = round(rsi_v, 1),
+      RSI_Mom    = round(rsi_mom_v, 2),
+      ADX14      = round(adx_v, 1),
       ADX_Umbral = round(umbral_adx, 1),
-      MACD = round(macd_v, 3),
-      EMA10 = round(ema10_v, 2),
-      VolMom = round(vol_mom, 2),
-      Condiciones = condiciones_cumplidas,
-      Señales = senales,
-      Decisión = decision,
+      EMA9       = round(ema9_v, 2),
+      EMA21      = round(ema21_v, 2),
+      VolMom     = round(vol_mom, 2),
+      Puntaje    = round(puntaje, 1),
+      Conds      = condiciones_cumplidas,
+      Señales    = senales,
+      Decisión   = decision,
       stringsAsFactors = FALSE
     )
   }, error = function(e) {
     cat(" ✗ Error:", e$message, "\n")
     data.frame(
-      Ticker = ticker,
-      Fecha = NA,
-      Cierre = NA,
-      RSI14 = NA,
-      ADX14 = NA,
-      ADX_Umbral = NA,
-      MACD = NA,
-      EMA10 = NA,
-      VolMom = NA,
-      Condiciones = 0,
-      Señales = "",
-      Decisión = paste0("⚠️ Error: ", substr(e$message, 1, 30)),
+      Ticker     = ticker,
+      Fecha      = NA, Cierre = NA, RSI14 = NA, RSI_Mom = NA,
+      ADX14      = NA, ADX_Umbral = NA, EMA9 = NA, EMA21 = NA,
+      VolMom     = NA, Puntaje = 0, Conds = 0,
+      Señales    = "",
+      Decisión   = paste0("⚠️ Error: ", substr(e$message, 1, 30)),
       stringsAsFactors = FALSE
     )
   })
 }
 
-# ===== EJECUCIÓN =====
+# ── EJECUCIÓN ────────────────────────────────────────────────────────────────
 cat("🔍 Analizando", length(tickers), "activos...\n\n")
 
 resultado_lista <- list()
@@ -139,34 +154,45 @@ for (i in seq_along(tickers)) {
 }
 
 resultado <- do.call(rbind, resultado_lista)
-
-# Reset rownames para evitar el "30%2" raro
 rownames(resultado) <- NULL
 
-# Ordenar por condiciones
-resultado <- resultado %>% arrange(desc(Condiciones))
+# Ordenar por puntaje ponderado
+resultado <- resultado %>% arrange(desc(Puntaje))
 
-# Mostrar
 cat("\n")
 print(resultado)
 
-# Resumen
+# ── RESUMEN EJECUTIVO ────────────────────────────────────────────────────────
 cat("\n===== RESUMEN EJECUTIVO =====\n")
-cat("ENTRAR FUERTE:", sum(resultado$Decisión == "✅ ENTRAR FUERTE", na.rm = TRUE), "\n")
-cat("ENTRAR CAUTELOSO:", sum(resultado$Decisión == "⚠️ ENTRAR CAUTELOSO", na.rm = TRUE), "\n")
-cat("ESPERAR:", sum(resultado$Decisión == "❌ ESPERAR", na.rm = TRUE), "\n")
+cat("ENTRAR FUERTE:    ", sum(resultado$Decisión == "✅ ENTRAR FUERTE",    na.rm = TRUE), "\n")
+cat("ENTRAR CAUTELOSO: ", sum(resultado$Decisión == "⚠️ ENTRAR CAUTELOSO", na.rm = TRUE), "\n")
+cat("ESPERAR:          ", sum(resultado$Decisión == "❌ ESPERAR",           na.rm = TRUE), "\n")
 
-# Mejores oportunidades
-mejores <- resultado %>% filter(Decisión %in% c("✅ ENTRAR FUERTE", "⚠️ ENTRAR CAUTELOSO"))
+mejores <- resultado %>%
+  filter(Decisión %in% c("✅ ENTRAR FUERTE", "⚠️ ENTRAR CAUTELOSO"))
+
 if (nrow(mejores) > 0) {
   cat("\n📈 MEJORES OPORTUNIDADES:\n")
-  print(mejores[, c("Ticker", "Cierre", "RSI14", "ADX14", "ADX_Umbral", "Condiciones", "Decisión")])
+  print(mejores[, c("Ticker", "Cierre", "RSI14", "RSI_Mom",
+                    "EMA9", "EMA21", "ADX14", "Puntaje", "Decisión")])
 } else {
   cat("\n⏳ No hay oportunidades claras actualmente.\n")
 }
 
 cat("\n💡 Leyenda de señales:\n")
-cat("  ↗️/↘️ = Precio >/< EMA10\n")
-cat("  🚀/🐌 = MACD positivo/negativo\n")
-cat("  💪/😴 = ADX fuerte/débil (vs percentil 30 histórico)\n")
-cat("  📊/📉 = Volumen saludable/bajo\n")
+cat("  ↗️/↘️  = Precio sobre/bajo EMA9\n")
+cat("  📈/📉  = EMA9 sobre/bajo EMA21 (tendencia de fondo)\n")
+cat("  ⚡/·   = Cruce alcista EMA9/EMA21 reciente / sin cruce\n")
+cat("  🎯/⚠️  = RSI en zona saludable [45-68] / fuera\n")
+cat("  🔥/❄️  = RSI ganando/perdiendo impulso (RSI Mom)\n")
+cat("  💪/😴  = ADX fuerte + volumen saludable / débil\n")
+cat("\n📐 Sistema de puntaje ponderado (máx 7.0):\n")
+cat("  Precio > EMA9       → 1.0 pts\n")
+cat("  EMA9 > EMA21        → 1.5 pts  (tendencia confirmada)\n")
+cat("  Cruce EMA9/EMA21 ↑  → 2.0 pts  (señal de entrada)\n")
+cat("  RSI en [45, 68]     → 1.0 pts\n")
+cat("  RSI momentum +      → 0.5 pts  (bonus)\n")
+cat("  ADX + Volumen OK    → 1.0 pts\n")
+cat("  ─────────────────────────────\n")
+cat("  ENTRAR FUERTE       ≥ 5.0 pts\n")
+cat("  ENTRAR CAUTELOSO    ≥ 3.0 pts\n")
