@@ -17,34 +17,35 @@ library(knitr)
 library(gridExtra)
 library(rvest)
 library(httr)
+
 # ==============================================================================
 # SECCIÓN 1: PARÁMETROS CONFIGURABLES
 # ==============================================================================
 
 # SELECCIÓN DE UNIVERSO DE INVERSIÓN
-n_top_sp500  <- 220
-n_top_nasdaq <- 120
+n_top_sp500  <- 60
+n_top_nasdaq <- 20
 benchmark    <- "SPY"
 
 # HORIZONTE DE DATOS HISTÓRICOS
-start_date <- "2020-01-01"   # Inicio amplio para cálculos sólidos
-end_date   <- Sys.Date()     # Siempre hasta hoy
+start_date <- "2020-01-01"
+end_date   <- Sys.Date()
 
 #   Tres meses: target_month <- c(1, 2, 3)
-target_month <- c(2, 3, 4)
+target_month <- c(4)
 
 # PARÁMETROS FINANCIEROS
-risk_free_rate <- 0.075
+risk_free_rate <- 0.03685 #T-bills 03MY
 
 # PERFIL DE RIESGO DEL INVERSOR
-weight_sharpe <- 0.25          # Rendimiento empieza a importar
-weight_low_vol <- 0.50         # Estabilidad sigue siendo prioritaria
-weight_decorr <- 0.25          # Diversificación más valorada
+weight_sharpe <- 0.20
+weight_low_vol <- 0.35
+weight_decorr <- 0.55
 
-n_divers_candidates <- 20
-volatility_percentile <- 0.40  # Moderado-estricto: 40% menos volátil
-correlation_percentile <- 0.60 # Moderado: acepta más universo
-max_assets_in_portfolio <- 12      # Máximo de activos en el portafolio final
+n_divers_candidates <- 45
+volatility_percentile <- 0.85
+correlation_percentile <- 0.75
+max_assets_in_portfolio <- 15
 
 # RESTRICCIONES DE PONDERACIÓN
 max_weight_per_asset <- 0.20
@@ -56,22 +57,25 @@ min_total_weight        <- 0.95
 max_total_weight        <- 1.00
 
 # ==============================================================================
-# SECCIÓN 2: FUNCIONES DE WEB SCRAPING
+# SECCIÓN 2: FUNCIONES DE WEB SCRAPING  (CORREGIDO)
 # ==============================================================================
-
-cat("\n╔════════════════════════════════════════════════════════════════╗\n")
-cat("║     OPTIMIZACIÓN DE PORTAFOLIO - S&P 500 & NASDAQ SCRAPING   ║\n")
-cat("╚════════════════════════════════════════════════════════════════╝\n\n")
 
 safe_scrape_table <- function(url, max_retries = 3) {
   for (attempt in 1:max_retries) {
     tryCatch({
       cat(paste("   Intento", attempt, "de", max_retries, "...\n"))
       
-      page <- read_html(httr::GET(url, httr::user_agent(
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-      )))
+      response <- httr::GET(
+        url,
+        httr::add_headers(
+          `User-Agent`      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          `Accept`          = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          `Accept-Language` = "en-US,en;q=0.5",
+          `Referer`         = "https://www.google.com/"
+        )
+      )
       
+      page   <- read_html(httr::content(response, as = "text", encoding = "UTF-8"))
       tables <- page %>% html_table(fill = TRUE)
       
       if (length(tables) > 0) {
@@ -81,9 +85,7 @@ safe_scrape_table <- function(url, max_retries = 3) {
       
     }, error = function(e) {
       cat(paste("   ✗ Error:", e$message, "\n"))
-      if (attempt < max_retries) {
-        Sys.sleep(2)
-      }
+      if (attempt < max_retries) Sys.sleep(3)
     })
   }
   
@@ -94,13 +96,22 @@ safe_scrape_table <- function(url, max_retries = 3) {
 get_sp500_tickers <- function(n_top = 50) {
   cat("\n📊 Obteniendo tickers del S&P 500...\n")
   
+  # Intento principal: slickcharts
   sp500_tbl <- safe_scrape_table("https://www.slickcharts.com/sp500")
   
+  # Fallback: Wikipedia (no bloquea bots)
   if (is.null(sp500_tbl)) {
-    stop("Error: No se pudo obtener la tabla del S&P 500 desde slickcharts.com")
+    cat("   ↩ Intentando con Wikipedia como alternativa...\n")
+    sp500_tbl <- safe_scrape_table(
+      "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    )
   }
   
-  ticker_col <- NULL
+  if (is.null(sp500_tbl)) {
+    stop("Error: No se pudo obtener la tabla del S&P 500 desde ninguna fuente")
+  }
+  
+  ticker_col    <- NULL
   possible_names <- c("Symbol", "Ticker", "Company", "symbol", "ticker")
   
   for (col_name in possible_names) {
@@ -134,7 +145,7 @@ get_nasdaq_tickers <- function(n_top = 30) {
     stop("Error: No se pudo obtener la tabla del NASDAQ desde stockanalysis.com")
   }
   
-  ticker_col <- NULL
+  ticker_col    <- NULL
   possible_names <- c("Symbol", "Ticker", "ticker", "symbol", "Stock")
   
   for (col_name in possible_names) {
@@ -158,7 +169,6 @@ get_nasdaq_tickers <- function(n_top = 30) {
   cat(paste("   ✓ Obtenidos", length(tickers), "tickers del NASDAQ\n"))
   return(tickers)
 }
-
 # ==============================================================================
 # SECCIÓN 3: OBTENCIÓN DE TICKERS
 # ==============================================================================
@@ -550,9 +560,6 @@ if (require_full_investment) {
 }
 
 port_spec <- add.constraint(portfolio = port_spec, type = "long_only")
-
-# Permitir peso 0 para que el solver descarte activos naturalmente
-# Solo se aplica max_weight_per_asset como límite superior
 port_spec <- add.constraint(portfolio = port_spec,
                             type = "box",
                             min  = 0,
@@ -569,9 +576,21 @@ opt_min_var <- optimize.portfolio(R               = log_returns_selected,
                                   optimize_method = "ROI",
                                   trace           = TRUE)
 
-# Identificar activos con peso significativo (>0.1%)
-w                <- extractWeights(opt_min_var)
-selected_tickers <- names(w[w > 0.001])
+# --- POST-FILTRO DE CARDINALIDAD ---
+w_raw <- extractWeights(opt_min_var)
+w_raw <- w_raw[w_raw > 0.001]  # Eliminar pesos insignificantes
+
+if (length(w_raw) > max_assets_in_portfolio) {
+  cat(paste("\n[INFO] Aplicando límite de cardinalidad:",
+            length(w_raw), "→", max_assets_in_portfolio, "activos\n"))
+  
+  w_raw       <- sort(w_raw, decreasing = TRUE)[1:max_assets_in_portfolio]
+  w_raw       <- w_raw / sum(w_raw) * min(sum(w_raw), max_total_weight)
+  
+  cat(paste("[INFO] Activos retenidos:", paste(names(w_raw), collapse = ", "), "\n"))
+}
+
+selected_tickers <- names(w_raw)
 
 cat(paste("\n✓ Portafolio optimizado con", length(selected_tickers), "activos\n"))
 cat(paste("  Activos:", paste(selected_tickers, collapse = ", "), "\n\n"))
@@ -594,30 +613,28 @@ target_returns <- seq(min_ret, max_ret, length.out = 50)
 
 efficient_frontier <- data.frame(Return = numeric(0), Risk = numeric(0))
 
-n   <- length(selected_tickers)
+n    <- length(selected_tickers)
 Dmat <- 2 * cov_mat
 dvec <- rep(0, n)
 
 for (target_ret in target_returns) {
   tryCatch({
-    # Restricciones: long-only, suma de pesos en [min_total, max_total],
-    # retorno objetivo >= target_ret/252 (diario)
     target_daily <- target_ret / 252
     
     Amat <- cbind(
-      diag(n),                          # long-only
-      rep(1, n),                        # sum >= min
-      rep(-1, n),                       # sum <= max
-      mean_ret,                         # retorno >= target
-      -diag(n)                          # w_i <= max_weight
+      diag(n),
+      rep(1, n),
+      rep(-1, n),
+      mean_ret,
+      -diag(n)
     )
     
     bvec <- c(
-      rep(0, n),                        # long-only
-      min_total_weight,                 # sum >= min
-      -max_total_weight,                # sum <= max
-      target_daily,                     # retorno
-      rep(-max_weight_per_asset, n)     # w_i <= max_weight
+      rep(0, n),
+      min_total_weight,
+      -max_total_weight,
+      target_daily,
+      rep(-max_weight_per_asset, n)
     )
     
     sol <- quadprog::solve.QP(Dmat = Dmat, dvec = dvec,
@@ -644,31 +661,41 @@ cat(paste("[INFO] Frontera eficiente calculada con", nrow(efficient_frontier), "
 extract_metrics <- function(opt_obj, label) {
   w_raw <- extractWeights(opt_obj)
   
+  # Aplicar post-filtro de cardinalidad
+  w_raw <- w_raw[w_raw > 0.001]
+  
+  if (length(w_raw) > max_assets_in_portfolio) {
+    w_raw <- sort(w_raw, decreasing = TRUE)[1:max_assets_in_portfolio]
+    w_raw <- w_raw / sum(w_raw) * min(sum(w_raw), max_total_weight)
+  }
+  
   common <- intersect(names(w_raw), colnames(log_returns_selected))
   w      <- w_raw[common]
   
-  mr  <- mean_ret[common]
-  cm  <- cov_mat[common, common]
+  mr      <- mean_ret[common]
+  cm      <- cov_mat[common, common]
   ret_mat <- log_returns_selected[, common]
   
   total_weight  <- sum(w)
   cash_position <- 1 - total_weight
   
+  # Retorno y riesgo anualizados (base diaria × 252)
   ret    <- sum(w * mr) * 252
   risk   <- sqrt(as.numeric(t(w) %*% cm %*% w)) * sqrt(252)
+  
+  # Sharpe anualizado: rf ya está en términos anuales, consistente con ret y risk
   sharpe <- (ret - risk_free_rate) / risk
   
   port_returns <- xts(as.numeric(ret_mat %*% w),
                       order.by = index(ret_mat))
   mdd <- maxDrawdown(port_returns)
   
-  # --- SORTINO ---
+  # Sortino:
   rf_daily       <- risk_free_rate / 252
   excess_returns <- as.numeric(port_returns) - rf_daily
   downside_ret   <- excess_returns[excess_returns < 0]
-  downside_dev   <- sqrt(mean(downside_ret^2)) * sqrt(252)  # Downside deviation anualizada
+  downside_dev   <- sqrt(mean(downside_ret^2)) * sqrt(252)
   sortino        <- (ret - risk_free_rate) / downside_dev
-  # ----------------
   
   list(Label         = label,
        Return        = ret,
@@ -681,7 +708,14 @@ extract_metrics <- function(opt_obj, label) {
        Cash_Position = cash_position)
 }
 
+# --- LLAMADA A LA FUNCIÓN ---
 metrics_minvar <- extract_metrics(opt_min_var, "Mínima Varianza")
+
+cat("\n[INFO] Métricas calculadas correctamente\n")
+cat(paste("  Activos en portafolio:", length(metrics_minvar$Weights), "\n"))
+cat(paste("  Retorno esperado:     ", percent(metrics_minvar$Return, accuracy = 0.01), "\n"))
+cat(paste("  Volatilidad:          ", percent(metrics_minvar$Risk,   accuracy = 0.01), "\n"))
+cat(paste("  Sharpe:               ", round(metrics_minvar$Sharpe,   3), "\n"))
 
 # ==============================================================================
 # SECCIÓN 10: VISUALIZACIONES
