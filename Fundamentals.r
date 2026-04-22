@@ -11,8 +11,8 @@ library(tidyverse)
 API_KEY <- "80Z52RRLLBYZL7G8"
 
 # === CONFIGURACIÓN EDITABLE ===
-ticker_desde_aqui   <- "AAPL"
-market_cap_desde_aqui <- 3793000000000
+ticker_desde_aqui   <- "EC"
+market_cap_desde_aqui <- 24350000000
 use_quarterly_desde_aqui <- TRUE
 
 # FUNCIONES AUXILIARES

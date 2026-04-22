@@ -9,7 +9,7 @@ library(gridExtra)
 # ============================================================================
 # FECHA DE ANÁLISIS
 # ============================================================================
-fecha_cierre <- "2026-01-30"  # Última fecha con datos completos
+fecha_cierre <- "2026-03-01"  # Última fecha con datos completos AAAA/MM/DD
 
 today <- as.Date(fecha_cierre)
 
@@ -17,7 +17,7 @@ today <- as.Date(fecha_cierre)
 # CONFIGURACIÓN DE HORIZONTE TEMPORAL
 # ============================================================================
 # Mes inicial de análisis
-inicio_mes <- 01  
+inicio_mes <- 03  
 
 # HORIZONTE TEMPORAL: ¿Cuántos meses analizar?
 # Opciones: 1, 2 o 3
@@ -38,10 +38,10 @@ solo_evaluar <- 1
 # ============================================================================
 
 # Portafolio nuevo propuesto
-tickers <- c("AJG", "ABBV", "EW", "KDP", "ENTG", "FDX", "JKHY", "TJX", "NEE", 
-             "ZTS", "TLT", "GLD", "COR", "PEP", "DUK", "FFIV")
-weights <- c(0.114, 0.112, 0.108, 0.106, 0.104, 0.088, 0.088, 0.084, 0.062, 
-             0.056, 0.036, 0.016, 0.014, 0.006, 0.004, 0.002)
+tickers <- c("EVRG", "COR", "BMY", "AMGN", "MCK", "VZ", "LMT", "WM", 
+             "NEE", "JNJ", "NOC")
+weights <- c(0.196, 0.153, 0.1524, 0.1241, 0.0959, 0.0814, 0.0633, 0.0431, 
+             0.0394, 0.03, 0.014)
 
 # ============================================================================
 # ESTRATEGIA DE REBALANCEO (Solo se usa si solo_evaluar = 0)

@@ -2,27 +2,27 @@
 # Peso BAJO → Percentil BAJO (estricto, filtrador)
 # Cuando quiera correlacion sectorial utilizo correlation_order <- 1
 
-# CONSERVADOR
-lambda <- 4.5  # Alta aversión al riesgo
-# Pesos de selección
-weight_sharpe <- 0.15          # Rendimiento es terciario
-weight_low_vol <- 0.65         # PRIORIDAD MÁXIMA: Estabilidad
-weight_decorr <- 0.20          # Diversificación importante
+# === PERFIL: CONSERVADOR ===
+lambda <- 8.0
 
+weight_sharpe <- 0.10
+weight_low_vol <- 0.55
+weight_decorr <- 0.35
 n_divers_candidates <- 30
+
 volatility_percentile <- 0.25  # SUPER estricto: solo el 25% menos volátil
 correlation_percentile <- 0.50 # Estricto: solo mitad menos correlacionada
 
 correlation_order <- 0         # Preferir baja correlación (diversificación)
 
 # === PERFIL: CONSERVADOR-MODERADO ===
-lambda <- 1  # Aversión al riesgo moderada-alta
-# Pesos de selección
-weight_sharpe <- 0.25          # Rendimiento empieza a importar
-weight_low_vol <- 0.50         # Estabilidad sigue siendo prioritaria
-weight_decorr <- 0.25          # Diversificación más valorada
+lambda <- 4.5
 
+weight_sharpe <- 0.10
+weight_low_vol <- 0.50
+weight_decorr <- 0.40
 n_divers_candidates <- 35
+
 volatility_percentile <- 0.40  # Moderado-estricto: 40% menos volátil
 correlation_percentile <- 0.60 # Moderado: acepta más universo
 # Configura el n_drivers candidate a 35
@@ -30,39 +30,39 @@ correlation_percentile <- 0.60 # Moderado: acepta más universo
 correlation_order <- 0         # Preferir baja correlación
 
 # === PERFIL: MODERADO ===
-lambda <- 4  # Balance equilibrado riesgo-retorno
-# Pesos de selección
-weight_sharpe <- 0.40          # PRIORIDAD: Eficiencia (Sharpe)
-weight_low_vol <- 0.35         # Volatilidad controlada pero no dominante
-weight_decorr <- 0.25          # Diversificación estándar
+lambda <- 2.5
 
+weight_sharpe <- 0.10
+weight_low_vol <- 0.45
+weight_decorr <- 0.45
 n_divers_candidates <- 40
+
 volatility_percentile <- 0.60  # Permisivo: acepta volatilidad media
 correlation_percentile <- 0.65 # Permisivo: amplio universo
 
 correlation_order <- 0         # Preferir baja correlación
 
 # === PERFIL: MODERADO-AGRESIVO ===
-lambda <- 3  # Baja aversión al riesgo
-# Pesos de selección
-weight_sharpe <- 0.50          # Rendimiento es REY
-weight_low_vol <- 0.25         # Volatilidad secundaria
-weight_decorr <- 0.25          # Diversificación táctica
+lambda <- 1.5
 
+weight_sharpe <- 0.15
+weight_low_vol <- 0.40
+weight_decorr <- 0.50
 n_divers_candidates <- 45
+
 volatility_percentile <- 0.75  # Muy permisivo: acepta alta volatilidad
 correlation_percentile <- 0.70 # Muy permisivo: universo amplio
 
 correlation_order <- 0         # Preferir baja correlación (evita concentración)
 
 # === PERFIL: AGRESIVO ===
-lambda <- 1.2  # Aversión al riesgo mínima
-# Pesos de selección
-weight_sharpe <- 0.55          # Rendimiento absoluto
-weight_low_vol <- 0.15         # Volatilidad casi irrelevante
-weight_decorr <- 0.30          # Diversificación importante (evita catástrofe)
+lambda <- 0.5
 
-n_divers_candidates <- 45
+weight_sharpe <- 0.20
+weight_low_vol <- 0.35
+weight_decorr <- 0.55
+n_divers_candidates <- 50
+
 volatility_percentile <- 0.85  # Extremadamente permisivo
 correlation_percentile <- 0.75 # Muy permisivo
 

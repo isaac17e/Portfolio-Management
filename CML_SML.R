@@ -15,9 +15,9 @@ get_asset_data <- function(ticker, start_date, end_date) {
 }
 
 # Parámetros editables
-risk_free_rate <- 0.09  
-tickers <- c("AJG", "ABBV", "EW", "KDP", "ENTG", "FDX", "JKHY", "TJX", "NEE", 
-             "ZTS", "TLT", "GLD", "COR", "PEP", "DUK", "FFIV")
+risk_free_rate <- 0.075  
+tickers <- c("EVRG", "COR", "BMY", "AMGN", "MCK", "VZ", "LMT", "WM", 
+             "NEE", "JNJ", "NOC")
 portfolio_std <- 0.08  # Desviación estándar objetivo
 start_date <- as.Date("2020-01-01")  
 end_date <- Sys.Date()
@@ -158,8 +158,8 @@ library(PortfolioAnalytics)
 
 # Líneas editables para los inputs
 risk_free_rate <- 0.09  
-tickers <- c("AJG", "ABBV", "EW", "KDP", "ENTG", "FDX", "JKHY", "TJX", "NEE", 
-             "ZTS", "TLT", "GLD", "COR", "PEP", "DUK", "FFIV")
+tickers <- c("EVRG", "COR", "BMY", "AMGN", "MCK", "VZ", "LMT", "WM", 
+             "NEE", "JNJ", "NOC")
 start_date <- as.Date("2019-01-01")  
 end_date <- Sys.Date()
 benchmark <- "SPY"  
