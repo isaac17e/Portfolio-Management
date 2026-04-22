@@ -25,6 +25,8 @@ library(httr)
 # SELECCIÓN DE UNIVERSO DE INVERSIÓN
 n_top_sp500  <- 60
 n_top_nasdaq <- 20
+n_top_sp500  <- 220
+n_top_nasdaq <- 120
 benchmark    <- "SPY"
 
 # HORIZONTE DE DATOS HISTÓRICOS
@@ -46,6 +48,20 @@ n_divers_candidates <- 45
 volatility_percentile <- 0.85
 correlation_percentile <- 0.75
 max_assets_in_portfolio <- 15
+target_month <- c(2, 3, 4)
+
+# PARÁMETROS FINANCIEROS
+risk_free_rate <- 0.075
+
+# PERFIL DE RIESGO DEL INVERSOR
+weight_sharpe <- 0.25          # Rendimiento empieza a importar
+weight_low_vol <- 0.50         # Estabilidad sigue siendo prioritaria
+weight_decorr <- 0.25          # Diversificación más valorada
+
+n_divers_candidates <- 20
+volatility_percentile <- 0.40  # Moderado-estricto: 40% menos volátil
+correlation_percentile <- 0.60 # Moderado: acepta más universo
+max_assets_in_portfolio <- 12      # Máximo de activos en el portafolio final
 
 # RESTRICCIONES DE PONDERACIÓN
 max_weight_per_asset <- 0.20
@@ -674,6 +690,11 @@ extract_metrics <- function(opt_obj, label) {
   
   mr      <- mean_ret[common]
   cm      <- cov_mat[common, common]
+  common <- intersect(names(w_raw), colnames(log_returns_selected))
+  w      <- w_raw[common]
+  
+  mr  <- mean_ret[common]
+  cm  <- cov_mat[common, common]
   ret_mat <- log_returns_selected[, common]
   
   total_weight  <- sum(w)
@@ -696,6 +717,13 @@ extract_metrics <- function(opt_obj, label) {
   downside_ret   <- excess_returns[excess_returns < 0]
   downside_dev   <- sqrt(mean(downside_ret^2)) * sqrt(252)
   sortino        <- (ret - risk_free_rate) / downside_dev
+  # --- SORTINO ---
+  rf_daily       <- risk_free_rate / 252
+  excess_returns <- as.numeric(port_returns) - rf_daily
+  downside_ret   <- excess_returns[excess_returns < 0]
+  downside_dev   <- sqrt(mean(downside_ret^2)) * sqrt(252)  # Downside deviation anualizada
+  sortino        <- (ret - risk_free_rate) / downside_dev
+  # ----------------
   
   list(Label         = label,
        Return        = ret,
