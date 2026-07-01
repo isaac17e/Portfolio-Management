@@ -31,8 +31,44 @@ benchmark    <- "SPY"
 # Mes(es) objetivo: sobre estos se evaluarán las métricas del portafolio.
 target_month <- c(4)
 
-# Ventana de estimación fija: 5 años de retornos mensuales completos
-estimation_years <- 5
+horizon_months <- length(target_month)
+horizon_label  <- paste(month.name[target_month], collapse = " + ")
+
+# ------------------------------------------------------------------------------
+# VENTANA DE ESTIMACIÓN — CÁLCULO DINÁMICO
+#
+# El tamaño de la ventana histórica debe satisfacer DOS restricciones
+# estadísticas independientes, y respetar un techo por disponibilidad de datos
+# y estabilidad de régimen de mercado:
+#
+# (A) Matriz de covarianza: se necesita un ratio observaciones/activos
+#     suficiente para que Ledoit-Wolf shrinkage estime bien la estructura de
+#     riesgo. Regla usada por el propio código más abajo: ratio >= 3 es
+#     "aceptable"; aquí pedimos un poco más de margen por defecto.
+#
+# (B) Evaluación del mes objetivo: como solo se usa 1 observación por año
+#     (el mes objetivo), el Sharpe/Sortino/MDD calculados sobre esos datos
+#     necesitan un número mínimo de años para no ser puro ruido estadístico.
+#
+# (C) Techo (max_estimation_years): ventanas muy largas mezclan regímenes de
+#     mercado distintos y excluyen empresas jóvenes vía el filtro de
+#     cobertura (coverage >= 80% de meses esperados), perdiendo NASDAQ
+#     relevantes que no tienen tanto historial (ej. IPOs recientes).
+# ------------------------------------------------------------------------------
+
+min_obs_asset_ratio  <- 4    # ratio obs/activos objetivo para la matriz de covarianza (3 = mínimo aceptable, 5 = conservador)
+min_target_periods   <- 15   # mínimo de observaciones (años) para Sharpe/Sortino/MDD del mes objetivo
+max_estimation_years <- 18   # techo: evita mezclar regímenes de mercado y perder empresas jóvenes por el filtro de cobertura
+min_estimation_years <- 5    # piso mínimo, por si los cálculos dinámicos dieran algo muy bajo
+
+n_universe_estimate <- n_top_sp500 + n_top_nasdaq  # aproximación previa a deduplicar/filtrar
+
+years_for_cov_ratio    <- ceiling(min_obs_asset_ratio * n_universe_estimate / 12)
+years_for_target_evals <- min_target_periods
+
+estimation_years <- max(years_for_cov_ratio, years_for_target_evals, min_estimation_years)
+estimation_years <- min(estimation_years, max_estimation_years)
+
 estimation_start <- as.character(Sys.Date() - round(estimation_years * 365))
 estimation_end   <- as.character(Sys.Date())
 
@@ -57,15 +93,16 @@ require_full_investment <- FALSE
 min_total_weight        <- 0.95
 max_total_weight        <- 1.00
 
-horizon_months <- length(target_month)
-horizon_label  <- paste(month.name[target_month], collapse = " + ")
-
 cat("\n═══════════════════════════════════════════════════════════════\n")
 cat("CONFIGURACIÓN DEL MODELO\n")
 cat("═══════════════════════════════════════════════════════════════\n")
 cat(paste("[CONFIG] Mes(es) objetivo (evaluación):", horizon_label, "\n"))
 cat(paste("[CONFIG] Horizonte de inversión:        ", horizon_months, "mes(es)\n"))
-cat(paste("[CONFIG] Ventana estimación:            ", estimation_years, "años\n"))
+cat(paste("[CONFIG] --- Cálculo dinámico de estimation_years ---\n"))
+cat(paste("[CONFIG] Años requeridos por ratio obs/activo (>=", min_obs_asset_ratio, "):", years_for_cov_ratio, "\n"))
+cat(paste("[CONFIG] Años requeridos por periodos objetivo (>=", min_target_periods, "):", years_for_target_evals, "\n"))
+cat(paste("[CONFIG] Techo por disponibilidad/régimen de mercado:      ", max_estimation_years, "\n"))
+cat(paste("[CONFIG] >>> estimation_years final:                       ", estimation_years, "años\n"))
 cat(paste("[CONFIG] Desde:", estimation_start, "hasta:", estimation_end, "\n"))
 cat(paste("[CONFIG] Factor anualización:           ", annualization_factor, "(mensual)\n\n"))
 
@@ -210,12 +247,12 @@ cat("[INFO] Esto puede tomar varios minutos...\n\n")
 
 # ---------------------------------------------------------------------------
 # FLUJO 1: Retornos mensuales completos — usados para ESTIMAR parámetros
-# Se descarga el histórico de 5 años completo sin filtro de mes.
-# tq_transmute con periodReturn calcula el retorno de cada mes usando
-# cierres ajustados, sin necesidad de resamplear manualmente.
+# Se descarga el histórico completo (ventana calculada dinámicamente arriba)
+# sin filtro de mes. tq_transmute con periodReturn calcula el retorno de cada
+# mes usando cierres ajustados, sin necesidad de resamplear manualmente.
 # ---------------------------------------------------------------------------
 
-cat("[INFO] Calculando retornos mensuales (histórico completo 5 años)...\n")
+cat(paste("[INFO] Calculando retornos mensuales (histórico completo", estimation_years, "años)...\n"))
 
 raw_monthly <- tq_get(
   all_tickers,
@@ -237,6 +274,10 @@ cat(paste("[INFO] Observaciones descargadas:", nrow(raw_monthly), "\n"))
 cat(paste("[INFO] Tickers con datos:", length(unique(raw_monthly$symbol)), "\n"))
 
 # Filtrar tickers con cobertura suficiente (>80% de los meses esperados)
+# NOTA: con ventanas largas (>15 años), empresas más jóvenes (ej. NASDAQ con
+# IPOs recientes) pueden quedar excluidas aquí por no alcanzar el 80% de
+# cobertura. Es un trade-off consciente: preferimos activos con historial
+# suficiente para estimar bien, aunque signifique perder algunos nombres.
 expected_months <- estimation_years * 12
 
 coverage <- raw_monthly %>%
@@ -246,6 +287,13 @@ coverage <- raw_monthly %>%
 
 cat(paste("[INFO] Tickers con cobertura >80% (",
           round(expected_months * 0.80), "meses):", nrow(coverage), "\n"))
+
+n_dropped_by_coverage <- length(unique(raw_monthly$symbol)) - nrow(coverage)
+if (n_dropped_by_coverage > 0) {
+  cat(paste("[INFO] ", n_dropped_by_coverage,
+            "tickers excluidos por historial insuficiente para la ventana de",
+            estimation_years, "años (posiblemente IPOs recientes)\n"))
+}
 
 monthly_full <- raw_monthly %>%
   filter(symbol %in% coverage$symbol)
@@ -290,11 +338,12 @@ cat(paste("[INFO] Observaciones en mes(es) objetivo por ticker —",
           "| Mediana:", round(n_target_obs$median),
           "| Max:", n_target_obs$max, "\n"))
 
-if (n_target_obs$median < 3) {
+if (n_target_obs$median < min_target_periods) {
   warning(paste(
-    "ADVERTENCIA: Menos de 3 observaciones históricas en el mes objetivo.",
-    "Las métricas de evaluación pueden ser inestables.",
-    "Considere ampliar estimation_years."
+    "ADVERTENCIA: La mediana de observaciones en el mes objetivo (",
+    round(n_target_obs$median), ") sigue por debajo del mínimo deseado (",
+    min_target_periods, "). Considere subir max_estimation_years o revisar",
+    "la disponibilidad de datos de los tickers seleccionados."
   ))
 }
 
@@ -388,7 +437,7 @@ cat(paste("[INFO] Matriz evaluación:  ", nrow(log_returns_target),
 
 ratio_obs <- nrow(log_returns_full) / ncol(log_returns_full)
 cat(paste("[INFO] Ratio obs/activos (estimación):", round(ratio_obs, 2),
-          ifelse(ratio_obs >= 3, "✓ Aceptable", "⚠ Bajo"), "\n"))
+          ifelse(ratio_obs >= min_obs_asset_ratio, "✓ Aceptable", "⚠ Bajo"), "\n"))
 
 if (nrow(log_returns_full) < 24) {
   stop("Error: Menos de 24 meses de datos para estimación. Revise estimation_years.")
@@ -588,7 +637,7 @@ print(descriptive_stats %>%
 
 cat("\n═══════════════════════════════════════════════════════════════\n")
 cat("OPTIMIZACIÓN DE PORTAFOLIOS\n")
-cat("Datos usados: histórico completo 5 años (estimación)\n")
+cat(paste("Datos usados: histórico completo", estimation_years, "años (estimación)\n"))
 cat("═══════════════════════════════════════════════════════════════\n\n")
 
 mean_ret <- colMeans(log_returns_selected)
@@ -687,7 +736,7 @@ cat(paste("[INFO] Frontera eficiente calculada con",
 
 # ==============================================================================
 # SECCIÓN 9: EXTRACCIÓN DE MÉTRICAS
-# Retorno/riesgo: estimados sobre histórico completo (5 años)
+# Retorno/riesgo: estimados sobre histórico completo (ventana dinámica)
 # Sharpe, Sortino, MDD: evaluados sobre retornos del mes(es) objetivo
 # ==============================================================================
 
@@ -888,7 +937,7 @@ cat("╚════════════════════════
 
 cat(paste("Mes(es) objetivo (evaluación):", horizon_label, "\n"))
 cat(paste("Horizonte de inversión:       ", horizon_months, "mes(es)\n"))
-cat(paste("Ventana de estimación:        ", estimation_years, "años\n"))
+cat(paste("Ventana de estimación:        ", estimation_years, "años (calculada dinámicamente)\n"))
 cat(paste("Observaciones estimación:     ", n_obs_full, "meses\n"))
 cat(paste("Períodos objetivo evaluados:  ", metrics_minvar$N_Target_Periods, "\n\n"))
 
