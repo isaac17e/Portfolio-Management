@@ -25,9 +25,6 @@ import quadprog
 
 import matplotlib.pyplot as plt
 
-# ------------------------------------------------
-# API KEY vía Colab Secrets
-# ------------------------------------------------
 from google.colab import userdata
 POLYGON_API_KEY = userdata.get('PolygonAPI')
 
@@ -127,10 +124,6 @@ print("=" * 60 + "\n")
 
 rf_rate_monthly = rf_rate / 12
 
-
-# ================================================
-# FUNCION AUXILIAR: Web scraping seguro
-# ================================================
 def safe_scrape_table(url, fallback=None, headers=None):
     try:
         headers = headers or {"User-Agent": "Mozilla/5.0 (compatible; PortfolioBot/1.0)"}
@@ -144,10 +137,6 @@ def safe_scrape_table(url, fallback=None, headers=None):
         print(f"Error al obtener datos de {url}: {e}")
         return fallback
 
-
-# ================================================
-# FUNCIONES AUXILIARES: Polygon.io
-# ================================================
 import re
 
 
@@ -264,9 +253,7 @@ def polygon_get_atm_option(ticker, target_dte, dte_tol=10, api_key=None, contrac
         return vacio
 
 
-# ================================================
 # FUNCIONES AUXILIARES: SKEW (Black-Scholes, delta objetivo, reconstruccion historica)
-# ================================================
 def bs_price(S, K, T_yrs, r, sigma, tipo="call"):
     if T_yrs <= 0 or sigma <= 0:
         return np.nan
@@ -475,10 +462,7 @@ def polygon_get_sector_etf(ticker):
             return etf
     return None
 
-
-# ================================================
 # OBTENER TICKERS: S&P 500
-# ================================================
 print("Obteniendo tickers del S&P 500...")
 sp500_tbl = safe_scrape_table("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")
 
@@ -531,9 +515,7 @@ else:
     print(f"S&P 500: {n_top_sp500} tickers objetivo, {len(sp500_tickers)} unicos obtenidos "
           f"(orden de tabla, sin market cap)")
 
-# ================================================
 # OBTENER TICKERS: NASDAQ
-# ================================================
 print("\nObteniendo tickers del NASDAQ...")
 nasdaq_tbl = safe_scrape_table("https://stockanalysis.com/list/nasdaq-stocks/")
 
@@ -572,9 +554,7 @@ else:
                        "AVGO", "ASML", "COST", "NFLX", "AMD", "PEP", "ADBE", "CSCO"]
     print("Usando NASDAQ fallback")
 
-# ================================================
 # ETFs
-# ================================================
 etf_core = ["SPY", "QQQ", "VOO", "VTI", "VYM", "IWM", "GLD", "SLV", "USO", "PDBC", "HYG", "VNQ"]
 
 etf_sectoriales = ["XLK", "XLV", "XLF", "XLE", "XLY", "XLP", "XLI", "XLB", "XLU", "XLRE", "XLC"]
@@ -603,14 +583,10 @@ etf_geograficos = [
 
 etf_tickers = list(dict.fromkeys(etf_core + etf_sectoriales + etf_subsectoriales + etf_geograficos))
 
-# ================================================
 # COMMODITIES
-# ================================================
 commodity_tickers = ["SLV", "UNG"]
 
-# ================================================
 # TICKERS INTERNACIONALES
-# ================================================
 international_tickers_full = [
     "RY.TO", "SHOP.TO", "TD.TO", "BN.TO", "ENB.TO", "TRI.TO", "BNS.TO",
     "CP.TO", "CNQ.TO", "AEM.TO", "SU.TO", "TRP.TO", "WCN.TO", "FNV.TO",
@@ -626,9 +602,7 @@ international_tickers_full = [
 
 international_tickers = international_tickers_full[:n_top_int]
 
-# ================================================
 # COMBINAR Y LIMPIAR
-# ================================================
 print("\nCombinando y limpiando tickers...")
 
 sp500_tickers_clean = list(dict.fromkeys(t.upper() for t in sp500_tickers))
@@ -668,9 +642,7 @@ all_tickers = list(dict.fromkeys(all_tickers))
 print(f"Total tickers FINAL (unicos): {len(all_tickers)}")
 
 
-# ================================================
 # DESCARGA DE PRECIOS (helper generico yfinance)
-# ================================================
 def download_period_returns(tickers, start, end, period="1mo"):
     """
     Descarga precios ajustados y calcula retornos por periodo (mensual o semanal).
@@ -744,9 +716,7 @@ seasonal_sd_stats = seasonal_sd_stats[
 
 print(f"Tickers con SD estacional calculable: {len(seasonal_sd_stats)}")
 
-# ================================================
 # ESTADISTICAS DESCRIPTIVAS
-# ================================================
 rf_rate_period = rf_rate_monthly
 
 summary_stats = (
@@ -778,9 +748,7 @@ if len(summary_stats) > 0:
 else:
     raise RuntimeError("No hay tickers con datos suficientes. Ajusta los parametros.")
 
-# ================================================
 # CORRELACIONES
-# ================================================
 returns_wide = df_prices.pivot_table(index="date", columns="symbol", values="monthly_return")
 cor_matrix_full = returns_wide.corr(min_periods=1)
 
@@ -798,9 +766,7 @@ avg_cor_by_ticker = (
     .rename(columns={"Var1": "symbol", "abs_freq": "avg_cor"})
 )
 
-# ================================================
 # FAMA-FRENCH
-# ================================================
 print("Descargando datos Fama-French...")
 try:
     ff_raw = pdr.DataReader("F-F_Research_Data_Factors", "famafrench",
@@ -819,9 +785,7 @@ except Exception as e:
     print(f"Error con Fama-French ({e}). Continuando sin ellos.")
     ff_data = None
 
-# ================================================
 # BETAS FF3
-# ================================================
 if ff_data is not None:
     # Alinear por mes (fin de mes) para el merge
     ff_data_m = ff_data.copy()
@@ -869,9 +833,7 @@ if ff_data is not None:
 else:
     ff_stats = pd.DataFrame(columns=["symbol", "beta_mkt", "beta_smb", "beta_hml", "ff_expected_return"])
 
-# ================================================
 # COMBINAR METRICAS
-# ================================================
 combined_stats = summary_stats.merge(avg_cor_by_ticker, on="symbol", how="left")
 combined_stats = combined_stats.merge(
     ff_stats[["symbol", "beta_mkt", "beta_smb", "beta_hml", "ff_expected_return"]], on="symbol", how="left"
@@ -893,9 +855,7 @@ if combined_stats is None or len(combined_stats) == 0:
 print(f"combined_stats creado: {len(combined_stats)} activos")
 
 
-# ================================================
 # SELECCION CONJUNTA VIA QUBO/ISING
-# ================================================
 def qubo_energy(idx_sel, h, J):
     idx_sel = list(idx_sel)
     if len(idx_sel) < 2:
@@ -1021,9 +981,7 @@ def select_optimal_candidates(df, n_candidates):
 ticker_candidates = select_optimal_candidates(combined_stats, n_pre_seasonal)
 print(f"\nPool pre-filtro estacional: {len(ticker_candidates)} candidatos\n")
 
-# ================================================
 # FILTRO ESTACIONAL (primera pasada, informativa)
-# ================================================
 print(f"Aplicando filtro estacional ({horizon_label})...")
 
 seasonal_candidates = (
@@ -1046,14 +1004,10 @@ print(seasonal_display.to_string(index=False))
 ticker_candidates = seasonal_candidates["symbol"].tolist()
 print(f"\nConjunto FINAL para optimizacion: {len(ticker_candidates)} tickers\n")
 
-# Recalcular pool completo pre-estacional (se vuelve a usar el pool completo mas abajo,
-# igual que en el script R original)
 ticker_candidates = select_optimal_candidates(combined_stats, n_pre_seasonal)
 print(f"\nPool pre-filtro estacional: {len(ticker_candidates)} candidatos\n")
 
-# ================================================
 # DATOS DE MERCADO VIA POLYGON (IV, GRIEGAS, SECTOR)
-# ================================================
 print("\nConsultando datos de mercado (Polygon) para tickers estadounidenses...")
 
 target_dte_polygon = max(round(horizon_months * 30), 15)
@@ -1112,9 +1066,7 @@ if polygon_diag["sample_errors"]:
         cuerpo = (e["body"] or "(sin cuerpo)")[:200] if e["body"] else "(sin cuerpo)"
         print(f"     status={e['status']} | {cuerpo}")
 
-# ================================================
 # FILTRO DELTA
-# ================================================
 if use_delta_filter:
     print(f"\nAplicando filtro Delta (delta_min={delta_min:.2f}, T={horizon_months / 12:.3f} anios)...")
     print("   Fuente: delta real de mercado (Polygon) para US, formula BS con vol historica para el resto")
@@ -1193,9 +1145,7 @@ else:
     print("Filtro Delta desactivado\n")
     delta_named = {t: np.nan for t in ticker_candidates}
 
-# ================================================
 # FILTRO ESTACIONAL (segunda pasada, por umbral de ratio)
-# ================================================
 print(f"Aplicando filtro estacional ({horizon_label}) - exclusion por umbral (ratio max={seasonal_vol_ratio_max:.2f}x)...")
 
 seasonal_ratio_stats = (
@@ -1244,9 +1194,7 @@ print(disp.rename(columns={"symbol": "Symbol", "seasonal_n_obs": "Semanas", "n_o
 ticker_candidates = seasonal_candidates["symbol"].tolist()
 print(f"\nConjunto FINAL para optimizacion: {len(ticker_candidates)} tickers\n")
 
-# ================================================
 # FILTRO DE SKEW (cobertura anomala vs especulacion)
-# ================================================
 print(f"\nAplicando filtro de skew put/call 25-delta (z_threshold={skew_z_threshold:.2f}, "
       f"lookback={skew_lookback_months} meses)...")
 
@@ -1348,9 +1296,7 @@ if len(full_set) < skew_min_survivors:
 ticker_candidates = full_set
 print(f"\nConjunto FINAL tras filtro de skew: {len(ticker_candidates)} tickers\n")
 
-# ================================================
 # CONSTRUCCION DE MATRIZ DE RETORNOS
-# ================================================
 df_wide = (
     df_prices[df_prices["symbol"].isin(ticker_candidates)]
     .pivot_table(index="date", columns="symbol", values="monthly_return")
@@ -1370,9 +1316,7 @@ mu = df_xts[assets].mean().values
 mu = np.where(np.isfinite(mu), mu, 0.0)
 n_assets = len(assets)
 
-# ================================================
 # MATRIZ DE COVARIANZA: SHRINKAGE IMPLIED + HISTORICA
-# ================================================
 iv_rank_low = 0.20
 iv_rank_high = 0.80
 alpha_min = 0.20
@@ -1581,9 +1525,7 @@ print(f"   Rango vol implicita (post-cap): {vol_impl_pct.min():.1f}% - {vol_impl
 tril_R = R_implied[np.tril_indices(n_assets, k=-1)]
 print(f"   Rango correlaciones implicitas (off-diagonal R_implied): {tril_R.min():.3f} - {tril_R.max():.3f}")
 
-# ================================================
 # OPTIMIZACION CUADRATICA (quadprog)
-# ================================================
 print(f"\nEjecutando optimizacion cuadratica (quadprog) con lambda={lambda_:.2f}...")
 
 etf_commodity_assets = [i for i, a in enumerate(assets) if a in (etf_tickers + commodity_tickers)]
@@ -1697,9 +1639,7 @@ for region_name, idx_region in geo_groups.items():
     if len(idx_region) > 0:
         print(f"  Peso {region_name}: {weights_opt.iloc[idx_region].sum() * 100:.1f}%")
 
-# ================================================
 # RESULTADOS
-# ================================================
 w_vec = weights_opt.values
 ret_opt = float(np.sum(w_vec * mu))
 sd_opt = float(np.sqrt(w_vec @ cov_mat @ w_vec))
@@ -1778,9 +1718,7 @@ print("\n=== METRICAS ANUALIZADAS (x12) ===")
 print(f"  Retorno anual:     {ret_opt * annualization_factor * 100:.2f}%")
 print(f"  Volatilidad anual: {sd_opt * math.sqrt(annualization_factor) * 100:.2f}%")
 
-# ================================================
 # ATRIBUCION DE RIESGO POR GRIEGAS
-# ================================================
 print("\n=== ATRIBUCION DE RIESGO POR GRIEGAS (BLACK-SCHOLES) ===")
 
 griegas_df = pd.DataFrame({"symbol": assets, "weight": weights_opt.reindex(assets).values})
@@ -1814,9 +1752,7 @@ top_griegas["Vega"] = top_griegas["vega"].map(lambda x: "-" if pd.isna(x) else f
 print("\n  Griegas por activo (peso > 1%):")
 print(top_griegas.rename(columns={"symbol": "Symbol"})[["Symbol", "Peso", "Delta", "Gamma", "Vega"]].to_string(index=False))
 
-# ================================================
 # FRONTERA EFICIENTE
-# ================================================
 print("\nGenerando frontera eficiente...")
 
 
@@ -1899,9 +1835,7 @@ plt.suptitle(f"Horizonte: {horizon_months} mes(es) ({horizon_label}) | lambda={l
 plt.tight_layout()
 plt.show()
 
-# ================================================
 # COMPARACION DE LAMBDAS
-# ================================================
 print("\n" + "=" * 70)
 print("ANALISIS COMPARATIVO: Portafolios por nivel de lambda")
 print("=" * 70 + "\n")
@@ -1974,9 +1908,7 @@ if len(results_comparison) > 0:
 
 print("\nOptimizacion completada exitosamente")
 
-# ================================================
 # ANALISIS DE MDD
-# ================================================
 print("\n\n=== ANALISIS DE MAXIMUM DRAWDOWN DEL PORTAFOLIO ===")
 
 tickers_portfolio = pesos["symbol"].tolist()
@@ -2148,9 +2080,7 @@ for _, row in pesos.iterrows():
     print(f"   {row['symbol']:<8}  {row['weight'] * 100:.2f}%")
 print("=" * 60)
 
-# ================================================
 # CALIDAD DE DATOS EN PORTAFOLIO FINAL
-# ================================================
 print("\n=== CALIDAD DE DATOS EN PORTAFOLIO FINAL ===")
 
 portfolio_data_quality = (
