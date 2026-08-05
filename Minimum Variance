@@ -24,9 +24,6 @@ import quadprog
 
 import matplotlib.pyplot as plt
 
-# ------------------------------------------------
-# API KEY via Colab Secrets
-# ------------------------------------------------
 from google.colab import userdata
 POLYGON_API_KEY = userdata.get('PolygonAPI')
 
@@ -382,9 +379,7 @@ benchmark_data = download_ticker_data(benchmark, start_date, end_date)
 if len(stock_data) == 0 or benchmark_data is None or len(benchmark_data) == 0:
     raise RuntimeError("Error: No se descargaron datos suficientes.")
 
-# ---------------------------------------------------------------------------
 # CONVERTIR A RETORNOS SEMANALES
-# ---------------------------------------------------------------------------
 print("\n[INFO] Convirtiendo precios diarios -> retornos semanales...")
 
 prices_wide = stock_data.pivot_table(index="date", columns="symbol", values="adjusted")
@@ -682,9 +677,7 @@ else:
     spot_cache = {t: get_spot_safe(t) for t in selected_pre_seasonal}
     iv_cache = {t: get_atm_iv_safe(t) for t in selected_pre_seasonal}
 
-# ==============================================================================
 # FILTRO ESTACIONAL: MENOR SD SEMANAL EN MESES OBJETIVO
-# ==============================================================================
 print(f"\nAplicando filtro estacional ({execution_label}) - SD semanal historica...")
 
 log_returns_seasonal = log_returns.loc[log_returns.index.month.isin(execution_months), selected_pre_seasonal]
@@ -816,9 +809,7 @@ if pd.isna(iv_spy_implied):
         spy_ret = np.log(spy_hist / spy_hist.shift(1)).dropna()
         iv_spy_implied = spy_ret.std() * math.sqrt(annualization_factor)
 
-# ==============================================================================
 # MODELO DE CORRELACION IMPLICITA: DOS FACTORES (MERCADO + SECTOR)
-# ==============================================================================
 n_sel = len(selected_tickers)
 
 print("\nConstruyendo modelo de correlacion de 2 factores (mercado + sector)...")
@@ -949,9 +940,7 @@ Cov_explained = B_load @ F_mat @ B_load.T
 
 print(f"     diag(Cov_explained) rango (semanal): {np.diag(Cov_explained).min():.6f} - {np.diag(Cov_explained).max():.6f}")
 
-# ==============================================================================
 # VOLATILIDAD OBJETIVO POR ACTIVO: IV vs HISTORICA (shrinkage), o IV pura
-# ==============================================================================
 if use_iv_shrinkage:
     sd_hist_annual_weekly = sd_hist_annual / math.sqrt(annualization_factor)
     iv_hist_ratio = iv_final / sd_hist_annual
@@ -1364,9 +1353,7 @@ print(f"  Peso maximo           : {w_final.max() * 100:.2f}% ({w_final.index[0]}
 print(f"  Concentracion top 3   : {w_final.head(3).sum() * 100:.2f}%")
 print("=" * 65 + "\n")
 
-# ==============================================================================
 # ATRIBUCION DE RIESGO SINTETICA (GRIEGAS BLACK-SCHOLES) - DIAGNOSTICO
-# ==============================================================================
 print("ATRIBUCION DE RIESGO SINTETICA (GRIEGAS BSM) - DIAGNOSTICO")
 print("=" * 65)
 
