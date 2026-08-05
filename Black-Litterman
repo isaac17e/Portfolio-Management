@@ -24,9 +24,7 @@ import matplotlib.pyplot as plt
 from google.colab import userdata
 POLYGON_API_KEY = userdata.get('PolygonAPI')
 
-# -----------------------------------------------------------------------------
 # 1. UNIVERSO DE TICKERS
-# -----------------------------------------------------------------------------
 TICKERS = [
     "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN",
     "META", "BRK-B", "LLY", "JPM", "V",
@@ -34,46 +32,32 @@ TICKERS = [
     "HD", "MRK", "AVGO", "CVX", "COST",
 ]
 
-# -----------------------------------------------------------------------------
 # 2. HORIZONTE TEMPORAL
-# -----------------------------------------------------------------------------
 MESES_HORIZONTE = 1
 DIAS_HABILES_MES = 21
 SEMANAS_MES = 4.33
 
-# -----------------------------------------------------------------------------
 # 3. PERFIL DE RIESGO
-# -----------------------------------------------------------------------------
 PERFIL_RIESGO = "moderado"
 
-# -----------------------------------------------------------------------------
 # 4. PARAMETROS DE OPTIMIZACION (por perfil)
-# -----------------------------------------------------------------------------
 PERFILES = {
     "conservador": dict(delta=4.0, omega_scale=5.0, tau=0.025),
     "moderado": dict(delta=2.5, omega_scale=1.0, tau=0.05),
     "agresivo": dict(delta=1.0, omega_scale=0.25, tau=0.10),
 }
 
-# -----------------------------------------------------------------------------
 # 5. LIMITES DEL PORTAFOLIO FINAL
-# -----------------------------------------------------------------------------
 UMBRAL_PESO_MIN = 0.005
 MAX_TICKERS_FINAL = 10
 
-# -----------------------------------------------------------------------------
 # 6. TASA LIBRE DE RIESGO - FALLBACK
-# -----------------------------------------------------------------------------
 Rf = 0.044
 
-# -----------------------------------------------------------------------------
 # 7. ANALISIS DE MAXIMUM DRAWDOWN (MDD)
-# -----------------------------------------------------------------------------
 MDD_START_YEAR = date.today().year - 2
 
-# -----------------------------------------------------------------------------
 # 8. VOLATILIDAD IMPLICITA VIA POLYGON - SSVI
-# -----------------------------------------------------------------------------
 USAR_IV_POLYGON = True
 MIN_STRIKES_SLICE = 5
 MIN_DIAS_VENCIMIENTO = 5
@@ -85,9 +69,7 @@ if USAR_IV_POLYGON and not POLYGON_API_KEY:
         "para usar el metodo historico."
     )
 
-# =============================================================================
 # FIN BLOQUE 0
-# =============================================================================
 
 horizonte_dias = MESES_HORIZONTE * DIAS_HABILES_MES
 horizonte_semanas = MESES_HORIZONTE * SEMANAS_MES
@@ -103,9 +85,7 @@ print(f"Tickers: {len(TICKERS)}")
 print(TICKERS)
 print()
 
-# =============================================================================
-# BLOQUE 1: DESCARGA DE PRECIOS
-# =============================================================================
+# DESCARGA DE PRECIOS
 
 fecha_fin = date.today()
 fecha_inicio = fecha_fin - timedelta(days=365 * 2)
@@ -166,9 +146,7 @@ mu_historico = retornos_sem.mean().values * factor_anualizacion
 print("\n=== Retornos historicos escalados al horizonte ===")
 print(pd.Series(np.round(mu_historico, 4), index=tickers))
 
-# =============================================================================
-# BLOQUE 1B: VOLATILIDAD IMPLICITA VIA POLYGON (SSVI) -> REEMPLAZA LA DIAGONAL DE SIGMA
-# =============================================================================
+# VOLATILIDAD IMPLICITA VIA POLYGON (SSVI) -> REEMPLAZA LA DIAGONAL DE SIGMA
 
 if USAR_IV_POLYGON:
 
@@ -420,13 +398,7 @@ else:
     print("\n=== USAR_IV_POLYGON = False - usando Sigma 100% historica ===")
     Sigma = Sigma_hist_df.copy()
 
-# =============================================================================
-# FIN BLOQUE 1B
-# =============================================================================
-
-# =============================================================================
-# BLOQUE 2: MARKET CAPS VIA YAHOO FINANCE -> w_mkt
-# =============================================================================
+# MARKET CAPS VIA YAHOO FINANCE -> w_mkt
 
 print("\n=== Extrayendo market caps via Yahoo Finance ===")
 
@@ -468,9 +440,7 @@ w_mkt = (market_caps_raw / market_caps_raw.sum()).values
 print("\nPesos de mercado (w_mkt):")
 print(pd.Series(np.round(w_mkt, 4), index=tickers))
 
-# =============================================================================
-# BLOQUE 3: PERFIL DE RIESGO -> DELTA, TAU, OMEGA_SCALE
-# =============================================================================
+# PERFIL DE RIESGO -> DELTA, TAU, OMEGA_SCALE
 
 perfil = PERFILES[PERFIL_RIESGO]
 delta = perfil["delta"]
@@ -486,9 +456,7 @@ print(f"\n=== PERFIL: {PERFIL_RIESGO.upper()} ===")
 print(f"Descripcion: {desc_perfiles[PERFIL_RIESGO]}")
 print(f"Delta (d): {delta} | Tau (t): {tau} | Omega scale: {perfil['omega_scale']}")
 
-# =============================================================================
-# BLOQUE 4: RETORNOS DE EQUILIBRIO pi - CAPM INVERTIDO
-# =============================================================================
+# RETORNOS DE EQUILIBRIO pi - CAPM INVERTIDO
 
 Sigma_mat = Sigma.values
 pi_eq = delta * (Sigma_mat @ w_mkt)
@@ -496,9 +464,7 @@ pi_eq = delta * (Sigma_mat @ w_mkt)
 print("\n=== Retornos de equilibrio pi (prior) ===")
 print(pd.Series(np.round(pi_eq, 4), index=tickers))
 
-# =============================================================================
-# BLOQUE 5: TABLA DE REFERENCIA PARA VIEWS
-# =============================================================================
+# TABLA DE REFERENCIA PARA VIEWS
 
 Rf_h = Rf * (MESES_HORIZONTE / 12)
 
@@ -513,14 +479,12 @@ print("\n=== REFERENCIA PARA FORMULAR VIEWS (Historico vs pi) ===")
 print("(Diff > 0: retorno historico supera el equilibrio de mercado)")
 print(referencia_views.sort_values("Diff_Hist_Pi", ascending=False).to_string(index=False))
 
-# =============================================================================
-# BLOQUE 6: VIEWS DEL GESTOR <- EDITA AQUI
-# =============================================================================
+# VIEWS DEL GESTOR 
 
-# --- PASO 1: Define cuantos views tienes ------------------------------------
+# --- PASO 1: Definir cuantos views tienes ------------------------------------
 N_VIEWS = 3
 
-# --- PASO 2: Construye la matriz P ------------------------------------------
+# --- PASO 2: Construir la matriz P ------------------------------------------
 P = pd.DataFrame(0.0, index=[f"View_{i+1}" for i in range(N_VIEWS)], columns=tickers)
 
 # VIEW 1 - RELATIVO: NVDA outperforma a XOM
@@ -539,7 +503,7 @@ P.loc["View_3", "MSFT"] = 1
 print("\n=== Matriz P (views del gestor) ===")
 print(P.round(4))
 
-# --- PASO 3: Define el vector Q ---------------------------------------------
+# --- PASO 3: Definir el vector Q ---------------------------------------------
 Q = pd.Series({
     "View_1": 0.10,   # NVDA outperforma XOM en 10% trimestral
     "View_2": 0.06,   # JPM+MA outperforman JNJ+MRK en 6% trimestral
@@ -549,7 +513,7 @@ Q = pd.Series({
 print("\n=== Vector Q (magnitudes del gestor) ===")
 print(Q.round(4))
 
-# --- PASO 4: Omega (automatico - no editar) ---------------------------------
+# --- PASO 4: Omega (automatico) ---------------------------------
 P_mat = P.values
 Q_vec = Q.values.reshape(-1, 1)
 
@@ -559,9 +523,7 @@ Omega = Omega_base * perfil["omega_scale"]
 print(f"\n=== Matriz Omega (incertidumbre de views - perfil: {PERFIL_RIESGO}) ===")
 print(pd.DataFrame(Omega, index=P.index, columns=P.index).round(6))
 
-# =============================================================================
-# BLOQUE 7: ACTUALIZACION BAYESIANA -> mu_BL
-# =============================================================================
+# ACTUALIZACION BAYESIANA -> mu_BL
 
 pi_eq_col = pi_eq.reshape(-1, 1)
 tauSigma = tau * Sigma_mat
@@ -587,9 +549,7 @@ comparacion["Ajuste_BL"] = np.round(comparacion["Mu_BL"] - comparacion["Pi_eq"],
 print("\n=== Comparacion: pi vs Historico vs mu_BL ===")
 print(comparacion.to_string(index=False))
 
-# =============================================================================
-# BLOQUE 8: OPTIMIZACION - MARKOWITZ CON mu_BL
-# =============================================================================
+# OPTIMIZACION - MARKOWITZ CON mu_BL
 
 Dmat = delta * Sigma_mat * 2
 Dmat = Dmat + np.eye(n) * 1e-10
@@ -614,9 +574,7 @@ w_BL = pd.Series(w_BL, index=tickers)
 print("\n=== Pesos optimos - Portafolio Black-Litterman ===")
 print(w_BL[w_BL > 0].round(4))
 
-# =============================================================================
-# BLOQUE 9: METRICAS DEL PORTAFOLIO
-# =============================================================================
+# METRICAS DEL PORTAFOLIO
 
 etiqueta_horizonte = f"{MESES_HORIZONTE} mes(es)"
 
@@ -645,9 +603,7 @@ print(f"Retorno esperado:   {ret_mkt:.4f}")
 print(f"Volatilidad:        {vol_mkt:.4f}")
 print(f"Sharpe Ratio:       {sharpe_mkt:.4f}")
 
-# =============================================================================
-# BLOQUE 10: VISUALIZACION
-# =============================================================================
+# VISUALIZACION
 
 fig, axes = plt.subplots(2, 2, figsize=(15, 11))
 
@@ -719,9 +675,7 @@ ax.set_ylabel("mu_BL - pi")
 plt.tight_layout()
 plt.show()
 
-# =============================================================================
-# BLOQUE 11: MAXIMUM DRAWDOWN (MDD) DEL PORTAFOLIO BL
-# =============================================================================
+# MAXIMUM DRAWDOWN (MDD) DEL PORTAFOLIO BL
 
 print("\n=== ANALISIS DE MAXIMUM DRAWDOWN DEL PORTAFOLIO ===")
 print(f"Periodo de analisis MDD: desde {MDD_START_YEAR}")
