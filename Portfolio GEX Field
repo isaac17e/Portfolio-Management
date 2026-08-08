@@ -1,5 +1,5 @@
 # ============================================================
-# PORTFOLIO GEX POTENTIAL FIELD SIMULATOR 
+# BLOQUE 1: CONFIGURACIÓN
 # ============================================================
 
 import time
@@ -17,10 +17,6 @@ import warnings
 from IPython.display import display, HTML, clear_output
 
 warnings.filterwarnings("ignore")
-
-# ============================================================
-# CONFIGURACIÓN — TODOS LOS PARÁMETROS EDITABLES
-# ============================================================
 
 POLYGON_API_KEY = None
 try:
@@ -73,17 +69,21 @@ PORTFOLIO_HOLDINGS = {
     "TSLA": 0.25,
 }
 
-# --- Parámetros nuevos: control del loop en vivo ---
-REFRESH_SECONDS = 60        # cada cuánto se re-descargan datos y se recalcula todo
-MAX_ITERATIONS = None        # None = corre indefinido hasta que interrumpas la celda
-ROTATE_CAMERA = True         # gira levemente la cámara en cada refresh (efecto "vivo")
+REFRESH_SECONDS = 60
+MAX_ITERATIONS = None
+ROTATE_CAMERA = True
+
+MIN_SIGMA_COVERAGE = 2.0
+MAX_STRIKE_RANGE_PCT = 0.35
+EDGE_TAPER_ENABLED = True
+NORM_PERCENTILE = 90
 
 if not POLYGON_API_KEY or POLYGON_API_KEY == "TU_API_KEY":
     print("ADVERTENCIA: No se detectó una API Key válida de Polygon.")
 
 
 # ============================================================
-# BLOQUE 0: UTILIDADES BLACK-SCHOLES (FALLBACK DE GRIEGOS)
+# BLOQUE 2: UTILIDADES BLACK-SCHOLES
 # ============================================================
 
 def get_dynamic_strike_range(horizon_months, base_pct=BASE_STRIKE_RANGE_PCT):
@@ -132,7 +132,7 @@ def implied_vol_bisection(market_price, S, K, T, r, option_type="call"):
 
 
 # ============================================================
-# BLOQUE 1: EXTRACCIÓN DE DATOS (POLYGON + YFINANCE) — POR TICKER
+# BLOQUE 3: EXTRACCIÓN DE DATOS
 # ============================================================
 
 def get_current_price(ticker):
@@ -331,7 +331,7 @@ def get_polygon_options_data(ticker, current_price, horizon_months=TIME_HORIZON_
 
 
 # ============================================================
-# BLOQUE 2: GEX NETO — SEPARADO EN CORTO PLAZO vs ESTRUCTURAL
+# BLOQUE 4: GEX NETO
 # ============================================================
 
 def calculate_gex_and_surface_forces(df_options, current_price, label=""):
@@ -404,7 +404,7 @@ def calculate_gex_split(df_options, current_price, near_term_days_cutoff=NEAR_TE
 
 
 # ============================================================
-# BLOQUE 3: EJE Y — MACRO / LIQUIDEZ / VOLATILIDAD (SISTÉMICO)
+# BLOQUE 5: EJE Y — MACRO / LIQUIDEZ / VOLATILIDAD
 # ============================================================
 
 def _fetch_macro_series(ticker_candidates, period=MACRO_LOOKBACK_PERIOD):
@@ -466,7 +466,7 @@ def calculate_macro_y_axis(macro_indicators, weights=MACRO_WEIGHTS):
 
 
 # ============================================================
-# BLOQUE 4: MOVIMIENTO ESPERADO (1σ) — POR TICKER
+# BLOQUE 6: MOVIMIENTO ESPERADO (1σ)
 # ============================================================
 
 def calculate_expected_move(df_options, current_price, horizon_months=TIME_HORIZON_MONTHS,
@@ -495,7 +495,7 @@ def calculate_expected_move(df_options, current_price, horizon_months=TIME_HORIZ
 
 
 # ============================================================
-# BLOQUE 5: DATOS POR HOLDING Y CAMPO DE FUERZA COMPUESTO
+# BLOQUE 7: DATOS POR HOLDING Y CAMPO DE FUERZA COMPUESTO
 # ============================================================
 
 def get_portfolio_chains(holdings, horizon_months=TIME_HORIZON_MONTHS):
@@ -532,6 +532,36 @@ def get_portfolio_chains(holdings, horizon_months=TIME_HORIZON_MONTHS):
             failed.append(ticker)
             continue
 
+        current_range_pct = get_dynamic_strike_range(horizon_months)
+        coverage_sigma = current_range_pct / expected_move
+        required_range_pct = min(MIN_SIGMA_COVERAGE * expected_move, MAX_STRIKE_RANGE_PCT)
+
+        if coverage_sigma < MIN_SIGMA_COVERAGE and required_range_pct > current_range_pct * 1.05:
+            print(f"ℹ️  [{ticker}] Cobertura real ±{coverage_sigma:.2f}σ < objetivo ±{MIN_SIGMA_COVERAGE:.1f}σ "
+                  f"(mov. esperado ±{expected_move*100:.1f}%). Re-descargando con ventana "
+                  f"±{required_range_pct*100:.1f}% (antes ±{current_range_pct*100:.1f}%)...")
+
+            df_opts_wide = get_polygon_options_data(ticker, price, horizon_months=horizon_months,
+                                                      strike_range_pct=required_range_pct)
+            if not df_opts_wide.empty:
+                split_wide = calculate_gex_split(df_opts_wide, price)
+                df_gex_structural_wide = split_wide.get("structural", {}).get("df_gex")
+                metrics_structural_wide = split_wide.get("structural", {}).get("metrics")
+                expected_move_wide = calculate_expected_move(df_opts_wide, price, horizon_months=horizon_months)
+
+                if (df_gex_structural_wide is not None and not df_gex_structural_wide.empty
+                        and expected_move_wide and not np.isnan(expected_move_wide) and expected_move_wide > 0):
+                    df_opts = df_opts_wide
+                    df_gex_structural = df_gex_structural_wide
+                    metrics_structural = metrics_structural_wide
+                    expected_move = expected_move_wide
+                    new_coverage = required_range_pct / expected_move
+                    print(f"✅ [{ticker}] Cobertura ampliada a ±{new_coverage:.2f}σ.")
+                else:
+                    print(f"⚠️  [{ticker}] El re-fetch no produjo datos utilizables; se conserva la ventana original.")
+            else:
+                print(f"⚠️  [{ticker}] El re-fetch con ventana ampliada no devolvió contratos; se conserva la ventana original.")
+
         portfolio_data[ticker] = {
             "weight": weight,
             "price": price,
@@ -557,8 +587,14 @@ def get_portfolio_chains(holdings, horizon_months=TIME_HORIZON_MONTHS):
 
     print(f"\n✅ Portafolio final: {len(portfolio_data)}/{len(holdings)} holdings procesados.")
     for t, v in portfolio_data.items():
+        try:
+            achieved_range_pct = float(v["df_gex_structural"]["strike"].sub(v["price"]).abs().max() / v["price"])
+            achieved_sigma = achieved_range_pct / v["expected_move"]
+            coverage_note = f"| cobertura real ±{achieved_sigma:.2f}σ"
+        except Exception:
+            coverage_note = ""
         print(f"   {t}: peso={v['weight_normalized']:.2%} | "
-              f"movimiento esperado (1σ, {horizon_months}m)=±{v['expected_move']*100:.2f}%")
+              f"movimiento esperado (1σ, {horizon_months}m)=±{v['expected_move']*100:.2f}% {coverage_note}")
 
     return portfolio_data
 
@@ -589,12 +625,24 @@ def _build_gex_force_function_sigma(df_gex_structural, current_price, expected_m
         print(f"❌ Error interpolando perfil de GEX en sigma-units: {e}")
         return None, None
 
+    if EDGE_TAPER_ENABLED:
+        real_min, real_max = df["sigma_x"].iloc[0], df["sigma_x"].iloc[-1]
+        left_band = real_min - (-sigma_range)
+        right_band = sigma_range - real_max
+        taper = np.ones_like(grid_sigma)
+        for i, gx in enumerate(grid_sigma):
+            if gx < real_min and left_band > 1e-6:
+                taper[i] = np.clip((gx - (-sigma_range)) / left_band, 0.0, 1.0)
+            elif gx > real_max and right_band > 1e-6:
+                taper[i] = np.clip((sigma_range - gx) / right_band, 0.0, 1.0)
+        gex_on_grid = gex_on_grid * taper
+
     gex_smoothed = gaussian_filter1d(gex_on_grid, sigma=smoothing_sigma)
-    max_abs = np.max(np.abs(gex_smoothed))
-    if max_abs == 0 or np.isnan(max_abs):
+    norm_reference = np.percentile(np.abs(gex_smoothed), NORM_PERCENTILE)
+    if norm_reference == 0 or np.isnan(norm_reference):
         return grid_sigma, np.zeros_like(grid_sigma)
 
-    return grid_sigma, gex_smoothed / max_abs
+    return grid_sigma, np.clip(gex_smoothed / norm_reference, -1.0, 1.0)
 
 
 def build_composite_portfolio_force(portfolio_data, sigma_range=SIGMA_RANGE,
@@ -634,7 +682,7 @@ def build_composite_portfolio_force(portfolio_data, sigma_range=SIGMA_RANGE,
 
 
 # ============================================================
-# BLOQUE 6: SUPERFICIE DE POTENCIAL Z(X,Y) DEL PORTAFOLIO
+# BLOQUE 8: SUPERFICIE DE POTENCIAL Z(X,Y)
 # ============================================================
 
 def generate_portfolio_potential_surface(grid_sigma, composite_force, macro_y_axis,
@@ -751,7 +799,7 @@ def get_holdings_reference_lines(portfolio_data, sigma_range=SIGMA_RANGE):
 
 
 # ============================================================
-# BLOQUE 7: VISUALIZACIÓN 3D — AHORA CON CÁMARA PARAMETRIZABLE
+# BLOQUE 9: VISUALIZACIÓN 3D
 # ============================================================
 
 def plot_3d_portfolio_field(X, Y, Z, current_state, reference_lines, portfolio_data,
@@ -809,13 +857,22 @@ def plot_3d_portfolio_field(X, Y, Z, current_state, reference_lines, portfolio_d
         title=f"Portfolio GEX Potential Field — {len(portfolio_data)} holdings "
               f"(horizonte {horizon_months}m) | actualizado {datetime.utcnow().strftime('%H:%M:%S')} UTC",
         scene=dict(
+            domain=dict(x=[0.24, 1.0], y=[0.0, 1.0]),
             xaxis_title="X: Posición en σ del movimiento esperado agregado",
             yaxis_title="Y: Tensión Macro (0=relajado, 1=tenso)",
             zaxis_title="Z: Potencial de Riesgo del Portafolio",
             camera=dict(eye=camera_eye),
         ),
-        width=950, height=750,
-        legend=dict(x=0.02, y=0.98),
+        width=1100, height=750,
+        legend=dict(
+            x=0.0, y=0.98, xanchor="left", yanchor="top",
+            font=dict(size=10),
+            itemsizing="constant",
+            tracegroupgap=1,
+            bgcolor="rgba(11,13,16,0.55)",
+            bordercolor="rgba(255,255,255,0.15)",
+            borderwidth=1,
+        ),
         paper_bgcolor="#0b0d10",
         plot_bgcolor="#0b0d10",
         font=dict(color="#d8dee5"),
@@ -824,9 +881,7 @@ def plot_3d_portfolio_field(X, Y, Z, current_state, reference_lines, portfolio_d
 
 
 # ============================================================
-# EJECUCIÓN COMPLETA — UNA SOLA PASADA
-# (Se mantiene igual al script original, para que la sigas usando
-#  suelta si alguna vez no quieres el modo live.)
+# BLOQUE 10: EJECUCIÓN
 # ============================================================
 
 def run_once():
@@ -850,18 +905,8 @@ def run_once():
     }
 
 
-# ============================================================
-# EJECUCIÓN LIVE — LOOP QUE ACTUALIZA EL MISMO OUTPUT DE LA CELDA
-# ============================================================
-
 def run_live(refresh_seconds=REFRESH_SECONDS, max_iterations=MAX_ITERATIONS,
              rotate_camera=ROTATE_CAMERA):
-    """
-    Corre el pipeline completo cada `refresh_seconds` y reemplaza el
-    gráfico en el mismo output de la celda de Colab (sin acumular
-    gráficos ni abrir ventanas nuevas). Interrumpe con el botón ■
-    de la celda (Runtime -> Interrupt execution).
-    """
     handle = None
     angle = 0.0
     iteration = 0
@@ -898,10 +943,4 @@ def run_live(refresh_seconds=REFRESH_SECONDS, max_iterations=MAX_ITERATIONS,
     print("\n✅ Loop finalizado.")
 
 
-# ============================================================
-# PUNTO DE ENTRADA
-# ============================================================
-# Descomenta UNA de las dos líneas siguientes en tu celda de Colab:
-
-# run_once()  # -> comportamiento original: una sola pasada, un solo gráfico
-run_live()    # -> modo live: recalcula y re-dibuja cada REFRESH_SECONDS
+run_live()
