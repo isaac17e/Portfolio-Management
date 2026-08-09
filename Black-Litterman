@@ -1,6 +1,5 @@
 # =============================================================================
 # BLACK-LITTERMAN PORTFOLIO OPTIMIZATION
-# Traducido de R a Python para Google Colab
 # =============================================================================
 
 import warnings
