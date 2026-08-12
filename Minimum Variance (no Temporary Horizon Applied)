@@ -24,9 +24,6 @@ import quadprog
 
 import matplotlib.pyplot as plt
 
-# ------------------------------------------------
-# API KEY via Colab Secrets
-# ------------------------------------------------
 from google.colab import userdata
 POLYGON_API_KEY = userdata.get('PolygonAPI')
 
@@ -53,13 +50,17 @@ end_date = date.today()
 horizon_months = 1
 execution_date = date.today()
 
+# CAP DE CONFIABILIDAD DE OPCIONES: mas alla de este limite, las cadenas se vuelven
+# iliquidas / spreads amplios, asi que la IV se desactiva y solo se usa HV EWMA.
+options_horizon_cap_months = 3
+
 # PARAMETROS FILTRO DE VOLATILIDAD (reemplaza filtro estacional por mes calendario)
 hv_window_multiplier = 3
 hv_window_min_weeks = 26
 ewma_lambda = 0.94
 
 # PARAMETROS FINANCIEROS
-risk_free_rate = 0.046
+risk_free_rate = 0.045
 risk_free_rate_weekly = risk_free_rate / 52
 
 n_pre_seasonal = 60
@@ -106,13 +107,18 @@ use_sector_factor = True
 # SECCION 2: VALIDACION DEL HORIZONTE
 # ==============================================================================
 
-if not (1 <= horizon_months <= 3):
-    raise ValueError("Error: horizon_months debe ser un entero entre 1 y 3.")
+if not (1 <= horizon_months <= 12):
+    raise ValueError("Error: horizon_months debe ser un entero entre 1 y 12.")
+if not (1 <= options_horizon_cap_months <= 12):
+    raise ValueError("Error: options_horizon_cap_months debe ser un entero entre 1 y 12.")
 
 horizon_weeks = horizon_months * (52 / 12)
 horizon_factor = horizon_weeks
 horizon_sqrt = math.sqrt(horizon_weeks)
 rf_horizon = risk_free_rate * (horizon_months / 12)
+
+use_iv_for_horizon = horizon_months <= options_horizon_cap_months
+T_options = min(horizon_months, options_horizon_cap_months) / 12
 
 hv_window_weeks = int(max(hv_window_multiplier * horizon_weeks, hv_window_min_weeks))
 
@@ -125,7 +131,11 @@ print("=" * 68 + "\n")
 print(f"Horizonte de inversion : {horizon_label}")
 print(f"Semanas del horizonte  : {horizon_weeks:.1f} semanas")
 print(f"Entrenamiento          : {start_date} -> {end_date:%Y-%m-%d}")
-print(f"Anualizacion base      : x{annualization_factor} | Horizonte: x{horizon_weeks:.1f} semanas\n")
+print(f"Anualizacion base      : x{annualization_factor} | Horizonte: x{horizon_weeks:.1f} semanas")
+if use_iv_for_horizon:
+    print(f"Datos de opciones (IV) : activos (horizonte <= cap de {options_horizon_cap_months} meses)\n")
+else:
+    print(f"Datos de opciones (IV) : desactivados (horizonte > cap de {options_horizon_cap_months} meses) - solo HV EWMA\n")
 
 # ==============================================================================
 # SECCION 3: UNIVERSO DE INVERSION
@@ -575,17 +585,20 @@ def get_atm_iv_safe(ticker):
 
 if use_delta_filter:
     print(f"\nAplicando filtro Delta BS (modo='{delta_strike_mode}', delta_min={delta_min:.2f}, "
-          f"T={horizon_months / 12:.3f} anios)...")
-
-    T_horizon = horizon_months / 12
+          f"T={T_options:.3f} anios{' [capado]' if not use_iv_for_horizon else ''})...")
 
     mu_weekly_for_delta = log_returns[selected_pre_seasonal].mean()
 
-    print(f"  Consultando spot + IV ATM (~{target_dte_iv} DTE) para {len(selected_pre_seasonal)} activos "
-          f"(pool pre-estacional)...")
-
     spot_cache = {t: get_spot_safe(t) for t in selected_pre_seasonal}
-    iv_cache = {t: get_atm_iv_safe(t) for t in selected_pre_seasonal}
+
+    if use_iv_for_horizon:
+        print(f"  Consultando spot + IV ATM (~{target_dte_iv} DTE) para {len(selected_pre_seasonal)} activos "
+              f"(pool pre-estacional)...")
+        iv_cache = {t: get_atm_iv_safe(t) for t in selected_pre_seasonal}
+    else:
+        print(f"  Horizonte > cap de opciones ({options_horizon_cap_months} meses) - se omite consulta de IV, "
+              f"solo HV para {len(selected_pre_seasonal)} activos...")
+        iv_cache = {t: np.nan for t in selected_pre_seasonal}
 
     delta_rows = []
     for ticker in selected_pre_seasonal:
@@ -606,13 +619,13 @@ if use_delta_filter:
         if delta_strike_mode == "atm":
             K = S
         elif delta_strike_mode == "rf":
-            K = S * (1 + risk_free_rate * T_horizon)
+            K = S * (1 + risk_free_rate * T_options)
         elif delta_strike_mode == "mu":
             K = S * (1 + mu_i * horizon_weeks)
         else:
             K = S
 
-        d1 = (math.log(S / K) + (risk_free_rate + iv ** 2 / 2) * T_horizon) / (iv * math.sqrt(T_horizon))
+        d1 = (math.log(S / K) + (risk_free_rate + iv ** 2 / 2) * T_options) / (iv * math.sqrt(T_options))
         delta_i = norm.cdf(d1)
 
         delta_rows.append(dict(symbol=ticker, delta=delta_i, strike_mode=delta_strike_mode, iv_used=iv))
@@ -659,10 +672,15 @@ if use_delta_filter:
 
 else:
     print("\nFiltro Delta desactivado (use_delta_filter = False)\n")
-    print(f"  Consultando spot + IV ATM (~{target_dte_iv} DTE) para {len(selected_pre_seasonal)} activos "
-          f"(uso: covarianza)...")
     spot_cache = {t: get_spot_safe(t) for t in selected_pre_seasonal}
-    iv_cache = {t: get_atm_iv_safe(t) for t in selected_pre_seasonal}
+    if use_iv_for_horizon:
+        print(f"  Consultando spot + IV ATM (~{target_dte_iv} DTE) para {len(selected_pre_seasonal)} activos "
+              f"(uso: covarianza)...")
+        iv_cache = {t: get_atm_iv_safe(t) for t in selected_pre_seasonal}
+    else:
+        print(f"  Horizonte > cap de opciones ({options_horizon_cap_months} meses) - se omite consulta de IV, "
+              f"solo HV para {len(selected_pre_seasonal)} activos...")
+        iv_cache = {t: np.nan for t in selected_pre_seasonal}
 
 # ==============================================================================
 # FILTRO DE VOLATILIDAD BLEND: HV ROLLING (EWMA) + IV IMPLICITA
@@ -796,12 +814,12 @@ print("\nEstimando volatilidades implicitas ATM (~30 DTE) para covarianza forwar
 
 faltantes_iv = [t for t in selected_tickers if t not in iv_cache]
 if faltantes_iv:
-    print(f"  Completando IV/spot para {len(faltantes_iv)} tickers no cacheados...")
+    print(f"  Completando spot para {len(faltantes_iv)} tickers no cacheados...")
     for t in faltantes_iv:
-        iv_cache[t] = get_atm_iv_safe(t)
+        iv_cache[t] = get_atm_iv_safe(t) if use_iv_for_horizon else np.nan
         spot_cache[t] = get_spot_safe(t)
 
-iv_spy_implied = get_atm_iv_safe(benchmark_iv)
+iv_spy_implied = get_atm_iv_safe(benchmark_iv) if use_iv_for_horizon else np.nan
 
 iv_assets_implied = np.array([iv_cache.get(t, np.nan) for t in selected_tickers])
 
@@ -939,7 +957,7 @@ corr_factors = factor_returns_mat.corr()
 iv_factor = {f: np.nan for f in factor_names}
 iv_factor["MKT"] = iv_spy_implied
 for s in sectores_unicos:
-    iv_s = get_atm_iv_safe(s)
+    iv_s = get_atm_iv_safe(s) if use_iv_for_horizon else np.nan
     if pd.isna(iv_s) or iv_s <= 0:
         iv_s = log_returns[s].std() * math.sqrt(annualization_factor)
     iv_factor[s] = iv_s
@@ -1383,7 +1401,7 @@ print("=" * 65 + "\n")
 print("ATRIBUCION DE RIESGO SINTETICA (GRIEGAS BSM) - DIAGNOSTICO")
 print("=" * 65)
 
-T_greeks = horizon_months / 12
+T_greeks = T_options
 mu_weekly_g = log_returns[list(w_final.index)].mean()
 
 greeks_rows = []
