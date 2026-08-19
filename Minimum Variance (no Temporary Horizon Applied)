@@ -1,7 +1,6 @@
 # ==============================================================================
 # OPTIMIZACION DE PORTAFOLIOS - MINIMA VARIANZA
 # ==============================================================================
-
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -24,6 +23,9 @@ import quadprog
 
 import matplotlib.pyplot as plt
 
+# ------------------------------------------------
+# API KEY via Colab Secrets
+# ------------------------------------------------
 from google.colab import userdata
 POLYGON_API_KEY = userdata.get('PolygonAPI')
 
@@ -39,8 +41,8 @@ benchmark = "SPY"
 
 n_top_sp500 = 50
 n_top_nasdaq = 50
-n_top_international = 10
-target_total_tickers = 110
+n_top_international = 20
+target_total_tickers = 120
 
 # HORIZONTE DE DATOS HISTORICOS
 start_date = "2014-01-01"
@@ -60,15 +62,15 @@ hv_window_min_weeks = 26
 ewma_lambda = 0.94
 
 # PARAMETROS FINANCIEROS
-risk_free_rate = 0.045
+risk_free_rate = 0.047
 risk_free_rate_weekly = risk_free_rate / 52
 
-n_pre_seasonal = 60
-n_divers_candidates = 45
+n_pre_seasonal = 45
+n_divers_candidates = 35
 
-volatility_percentile = 0.85
-correlation_percentile = 0.75
-max_assets_in_portfolio = 10
+volatility_percentile = 0.97
+correlation_percentile = 0.9
+max_assets_in_portfolio = 8
 
 # RESTRICCIONES DE PONDERACION
 max_weight_per_asset = 0.22
@@ -82,13 +84,17 @@ max_total_weight = 1.00
 # === RESTRICCION DE PARTICIPACION DE ETFs EN EL PORTAFOLIO FINAL ===
 use_etf_constraint = True
 etf_min_weight = 0.00
-etf_max_weight = 0.20
+etf_max_weight = 0.05
+
+# === RESTRICCION DE EXPOSICION CAMBIARIA (tickers no denominados en USD) === cámbialo según el perfil, recuerda que esto es exposición a otros países
+use_fx_factor = True
+max_fx_exposure = 0.35
 
 annualization_factor = 52
 
 # === FILTRO DELTA (Black-Scholes) ===
 use_delta_filter = True
-delta_min = 0.45
+delta_min = 0.3
 delta_strike_mode = "atm"
 target_dte_iv = 30
 dte_tol_iv = 7
@@ -96,12 +102,13 @@ moneyness_tol_iv = 0.02
 
 # === SHRINKAGE COVARIANZA: IMPLIED vs HISTORICA ===
 use_iv_shrinkage = True
-shrinkage_max = 0.70
+shrinkage_max = 0.40
 shrinkage_min = 0.02
-ratio_band = 0.25
+ratio_band = 0.20
 
-# === CORRELACION IMPLICITA DE DOS FACTORES (MERCADO + SECTOR) ===
+# === CORRELACION IMPLICITA DE FACTORES (MERCADO + SECTOR + PAIS + FX) ===
 use_sector_factor = True
+use_country_factor = True
 
 # ==============================================================================
 # SECCION 2: VALIDACION DEL HORIZONTE
@@ -208,7 +215,7 @@ else:
 
 # === ETFs ===
 etf_core = ["SPY", "QQQ", "VOO", "VTI", "VYM", "IWM", "GLD", "SLV", "USO", "PDBC", "HYG", "VNQ"]
-etf_sectoriales = ["XLK", "XLV", "XLF", "XLE", "XLY", "XLP", "XLI", "XLB", "XLU", "XLRE", "XLC"]
+etf_sectoriales = ["XLK", "XLV", "XLF", "XLE", "XLY", "XLP", "XLI", "XLB", "XLU", "XLRE", "XLC", "VOX"]
 etf_subsectoriales = [
     "SMH", "SOXX", "IGV", "CIBR", "HACK", "SKYY", "BOTZ", "ROBO", "BUG",
     "XBI", "IBB", "PPH", "IHI", "IHF", "ARKG",
@@ -228,6 +235,7 @@ etf_geograficos = [
     "MCHI", "FXI", "INDA",
     "ILF", "EWZ",
     "VXUS", "ACWX", "VT", "FM",
+    "EWC", "EWG", "EWU", "EWQ", "EWP",
 ]
 etf_tickers = list(dict.fromkeys(etf_core + etf_sectoriales + etf_subsectoriales + etf_geograficos))
 
@@ -300,6 +308,39 @@ if target_total_tickers > 0 and len(all_tickers) < target_total_tickers:
 
 all_tickers = list(dict.fromkeys(all_tickers))
 print(f"[INFO] Total de tickers FINAL (unicos): {len(all_tickers)}\n")
+
+# ==============================================================================
+# MAPEO DE MONEDA POR SUFIJO DE TICKER + PARES FX (para conversion a USD)
+# ==============================================================================
+
+fx_pairs = {
+    "CAD": {"ticker": "CAD=X", "invert": True},
+    "EUR": {"ticker": "EURUSD=X", "invert": False},
+    "GBP": {"ticker": "GBPUSD=X", "invert": False},
+    "JPY": {"ticker": "JPY=X", "invert": True},
+}
+ticker_currency_by_suffix = {
+    ".TO": "CAD",
+    ".DE": "EUR",
+    ".PA": "EUR",
+    ".MC": "EUR",
+    ".L": "GBP",
+    ".T": "JPY",
+}
+ticker_currency_override = {
+    "HSBC": "GBP",
+    "BP": "GBP",
+}
+
+
+def get_currency_for_ticker(ticker):
+    if ticker in ticker_currency_override:
+        return ticker_currency_override[ticker]
+    for suf, cur in ticker_currency_by_suffix.items():
+        if ticker.endswith(suf):
+            return cur
+    return "USD"
+
 
 # ==============================================================================
 # SECCION 4: REPORTE DEL UNIVERSO
@@ -375,7 +416,21 @@ if len(stock_data) == 0 or benchmark_data is None or len(benchmark_data) == 0:
     raise RuntimeError("Error: No se descargaron datos suficientes.")
 
 # ---------------------------------------------------------------------------
-# CONVERTIR A RETORNOS SEMANALES
+# DESCARGA DE PARES FX (para convertir precios de internacionales a USD)
+# ---------------------------------------------------------------------------
+print("\n[INFO] Descargando pares FX para conversion a USD...")
+fx_data = {}
+for cur, info in fx_pairs.items():
+    d = download_ticker_data(info["ticker"], start_date, end_date)
+    if d is not None and len(d) > 0:
+        fx_data[cur] = d.set_index("date")["adjusted"]
+        print(f"  OK {cur} ({info['ticker']})")
+    else:
+        print(f"  ADVERTENCIA: no se pudo descargar {info['ticker']} para {cur} "
+              f"- los tickers en {cur} quedaran en moneda local")
+
+# ---------------------------------------------------------------------------
+# CONVERTIR A RETORNOS SEMANALES (precios internacionales convertidos a USD)
 # ---------------------------------------------------------------------------
 print("\n[INFO] Convirtiendo precios diarios -> retornos semanales...")
 
@@ -392,8 +447,31 @@ if len(prices_wide_clean) == 0:
     raise RuntimeError("Error: No hay datos despues de eliminar NAs.")
 
 prices_weekly = prices_wide_clean.resample("W").last()
-weekly_returns = np.log(prices_weekly / prices_weekly.shift(1)).dropna(how="all")
+
+fx_weekly_price_usd = {}
+for cur, s in fx_data.items():
+    w = s.resample("W").last()
+    fx_weekly_price_usd[cur] = (1 / w) if fx_pairs[cur]["invert"] else w
+fx_weekly_price_usd = pd.DataFrame(fx_weekly_price_usd)
+
+print("[INFO] Convirtiendo precios de tickers no-USD a USD...")
+prices_weekly_usd = prices_weekly.copy()
+n_convertidos = 0
+for t in prices_weekly_usd.columns:
+    cur = get_currency_for_ticker(t)
+    if cur != "USD":
+        if cur in fx_weekly_price_usd.columns:
+            fx_series = fx_weekly_price_usd[cur].reindex(prices_weekly_usd.index).ffill()
+            prices_weekly_usd[t] = prices_weekly_usd[t] * fx_series
+            n_convertidos += 1
+        else:
+            print(f"  ADVERTENCIA: sin serie FX para {t} ({cur}) - queda en moneda local")
+print(f"  OK Tickers convertidos a USD: {n_convertidos}")
+
+weekly_returns = np.log(prices_weekly_usd / prices_weekly_usd.shift(1)).dropna(how="all")
 weekly_returns = weekly_returns.dropna()
+
+fx_weekly_returns = np.log(fx_weekly_price_usd / fx_weekly_price_usd.shift(1)).dropna(how="all")
 
 benchmark_daily = benchmark_data.set_index("date")["adjusted"]
 benchmark_weekly_prices = benchmark_daily.resample("W").last()
@@ -577,6 +655,12 @@ def get_polygon_option_snapshot(ticker):
 
 
 def get_atm_iv_safe(ticker):
+    if get_currency_for_ticker(ticker) != "USD":
+        # Polygon solo cubre opciones de emisores listados en EE.UU. Para
+        # tickers internacionales no se consulta - el fallback historico
+        # (HV EWMA / vol anual) ya existente en cada punto de uso se
+        # activa automaticamente al recibir NaN aqui.
+        return np.nan
     poly = get_polygon_option_snapshot(ticker)
     if poly is not None and not pd.isna(poly["iv"]) and poly["iv"] > 0:
         return poly["iv"]
@@ -848,11 +932,11 @@ if pd.isna(iv_spy_implied):
         iv_spy_implied = spy_ret.std() * math.sqrt(annualization_factor)
 
 # ==============================================================================
-# MODELO DE CORRELACION IMPLICITA: DOS FACTORES (MERCADO + SECTOR)
+# MODELO DE CORRELACION IMPLICITA: FACTORES (MERCADO + SECTOR + PAIS + FX)
 # ==============================================================================
 n_sel = len(selected_tickers)
 
-print("\nConstruyendo modelo de correlacion de 2 factores (mercado + sector)...")
+print("\nConstruyendo modelo de correlacion de factores (mercado + sector + pais + fx)...")
 
 sector_etf_map = {
     "Information Technology": "XLK",
@@ -865,7 +949,10 @@ sector_etf_map = {
     "Materials": "XLB",
     "Utilities": "XLU",
     "Real Estate": "XLRE",
-    "Communication Services": "XLC",
+    # XLC (lanzado en 2018) no cubre start_date=2014 con suficiente historia
+    # y queda descartado en el filtro de completitud - se usa VOX (Vanguard
+    # Communication Services ETF, inception 2004-09-23) como proxy sectorial.
+    "Communication Services": "VOX",
 }
 
 ticker_sector_etf = {}
@@ -884,8 +971,39 @@ if use_sector_factor:
         sector_tbl = sector_tbl[sector_tbl["sector_etf"].notna()]
         ticker_sector_etf = dict(zip(sector_tbl["symbol"], sector_tbl["sector_etf"]))
     except Exception:
-        print("  ADVERTENCIA No se pudo obtener el mapeo de sectores (Wikipedia) - cae a modelo de 1 factor (solo mercado)")
+        print("  ADVERTENCIA No se pudo obtener el mapeo de sectores (Wikipedia) - cae a modelo de 1 factor (solo mercado) para domesticos")
         ticker_sector_etf = {}
+
+    # === MAPEO DE SECTOR PARA TICKERS INTERNACIONALES (mismos ETFs sectoriales
+    # ya presentes en etf_sectoriales, no se abren nuevos conjuntos) ===
+    international_sector_etf_map = {
+        # Canada (.TO)
+        "RY.TO": "XLF", "SHOP.TO": "XLK", "TD.TO": "XLF", "BN.TO": "XLF",
+        "ENB.TO": "XLE", "TRI.TO": "XLI", "BNS.TO": "XLF", "CP.TO": "XLI",
+        "CNQ.TO": "XLE", "AEM.TO": "XLB", "SU.TO": "XLE", "TRP.TO": "XLE",
+        "WCN.TO": "XLI", "FNV.TO": "XLB", "SAP.TO": "XLP",
+        # Alemania (.DE)
+        "SIE.DE": "XLI", "DTE.DE": "VOX", "ALV.DE": "XLF", "MBG.DE": "XLY",
+        "IFX.DE": "XLK", "BMW.DE": "XLY", "DB1.DE": "XLF", "DHL.DE": "XLI",
+        "DBK.DE": "XLF", "MUV2.DE": "XLF",
+        # Reino Unido (.L, y HSBC/BP sin sufijo)
+        "AZN.L": "XLV", "HSBC": "XLF", "ULVR.L": "XLP", "BP": "XLE",
+        "GSK.L": "XLV", "RIO.L": "XLB", "BATS.L": "XLP", "GLEN.L": "XLB",
+        "DGE.L": "XLP", "NG.L": "XLU",
+        # Francia (.PA)
+        "MC.PA": "XLY", "TTE.PA": "XLE", "SAN.PA": "XLV", "OR.PA": "XLP",
+        "SU.PA": "XLI", "AI.PA": "XLB", "BNP.PA": "XLF", "RMS.PA": "XLY",
+        "CS.PA": "XLF", "SAF.PA": "XLI", "CAP.PA": "XLK",
+        # Espana (.MC)
+        "ITX.MC": "XLY", "IBE.MC": "XLU", "BBVA.MC": "XLF", "SAN.MC": "XLF",
+        # Japon (.T)
+        "7203.T": "XLY", "6758.T": "XLY", "6861.T": "XLK", "8306.T": "XLF",
+        "9984.T": "VOX", "6367.T": "XLI", "6098.T": "XLI", "4063.T": "XLB",
+        "7974.T": "VOX", "9432.T": "VOX", "6501.T": "XLI", "7267.T": "XLY",
+        "8316.T": "XLF", "4568.T": "XLV", "6902.T": "XLY", "4502.T": "XLV",
+        "8031.T": "XLI",
+    }
+    ticker_sector_etf.update(international_sector_etf_map)
 
 asset_sector_etf = {t: ticker_sector_etf.get(t) for t in selected_tickers}
 
@@ -902,9 +1020,73 @@ n_con_sector = sum(1 for v in asset_sector_etf.values() if v is not None)
 print(f"  OK Sector asignado: {n_con_sector} de {n_sel} activos | {k_sectores} sectores distintos en el pool"
       + (f" ({', '.join(sectores_unicos)})" if k_sectores > 0 else ""))
 
-# --- Betas de 2 factores por activo: r_i ~ r_MKT + r_SECTOR ------------------
+# ==============================================================================
+# MAPEO DE PAIS/REGION PARA TICKERS INTERNACIONALES
+# ==============================================================================
+
+country_etf_by_suffix = {
+    ".TO": "EWC",
+    ".DE": "EWG",
+    ".L": "EWU",
+    ".PA": "EWQ",
+    ".MC": "EWP",
+    ".T": "EWJ",
+}
+
+country_etf_ticker_override = {
+    "HSBC": "EWU",
+    "BP": "EWU",
+}
+
+
+def get_country_etf_for_ticker(ticker):
+    if ticker in country_etf_ticker_override:
+        return country_etf_ticker_override[ticker]
+    for suf, etf in country_etf_by_suffix.items():
+        if ticker.endswith(suf):
+            return etf
+    return None
+
+
+asset_country_etf = {}
+if use_country_factor:
+    asset_country_etf = {t: get_country_etf_for_ticker(t) for t in selected_tickers}
+
+paises_presentes = sorted(set(v for v in asset_country_etf.values() if v is not None))
+paises_sin_precio = [p for p in paises_presentes if p not in log_returns.columns]
+if paises_sin_precio:
+    print(f"  ADVERTENCIA ETFs de pais sin precios descargados (se ignoran): {', '.join(paises_sin_precio)}")
+    asset_country_etf = {t: (None if v in paises_sin_precio else v) for t, v in asset_country_etf.items()}
+
+paises_unicos = sorted(set(v for v in asset_country_etf.values() if v is not None))
+k_paises = len(paises_unicos)
+
+n_con_pais = sum(1 for v in asset_country_etf.values() if v is not None)
+print(f"  OK Pais asignado: {n_con_pais} de {n_sel} activos | {k_paises} paises distintos en el pool"
+      + (f" ({', '.join(paises_unicos)})" if k_paises > 0 else ""))
+
+# ==============================================================================
+# MAPEO DE MONEDA PARA TICKERS INTERNACIONALES (FACTOR FX)
+# ==============================================================================
+
+asset_currency = {}
+if use_fx_factor:
+    asset_currency = {t: get_currency_for_ticker(t) for t in selected_tickers}
+
+currencies_presentes = sorted(set(
+    v for v in asset_currency.values() if v != "USD" and v in fx_weekly_returns.columns
+))
+k_currencies = len(currencies_presentes)
+
+n_con_fx = sum(1 for v in asset_currency.values() if v != "USD" and v in fx_weekly_returns.columns)
+print(f"  OK Moneda no-USD con factor FX: {n_con_fx} de {n_sel} activos | {k_currencies} monedas distintas en el pool"
+      + (f" ({', '.join(currencies_presentes)})" if k_currencies > 0 else ""))
+
+# --- Betas de factores por activo: r_i ~ r_MKT + r_SECTOR + r_PAIS + r_FX ---
 beta_hist_implied = {}
 beta_sector_implied = {}
+beta_country_implied = {}
+beta_fx_implied = {}
 
 r_mkt_full = benchmark_returns.iloc[:, 0]
 var_spy_w = r_mkt_full.var()
@@ -912,20 +1094,31 @@ var_spy_w = r_mkt_full.var()
 for t in selected_tickers:
     r_i = log_returns_selected[t]
     sec_etf = asset_sector_etf.get(t)
+    pais_etf = asset_country_etf.get(t)
+    cur = asset_currency.get(t)
     fit_ok = False
 
+    covariate_cols = {}
     if sec_etf is not None:
-        r_sec = log_returns[sec_etf]
-        aligned = pd.concat([r_i, r_mkt_full.rename("mkt"), r_sec.rename("sec")], axis=1).dropna()
+        covariate_cols["sec"] = log_returns[sec_etf].rename("sec")
+    if pais_etf is not None:
+        covariate_cols["pais"] = log_returns[pais_etf].rename("pais")
+    if use_fx_factor and cur is not None and cur != "USD" and cur in fx_weekly_returns.columns:
+        covariate_cols["fx"] = fx_weekly_returns[cur].rename("fx")
+
+    if covariate_cols:
+        aligned = pd.concat([r_i.rename(t), r_mkt_full.rename("mkt")] + list(covariate_cols.values()), axis=1).dropna()
         if len(aligned) >= 10:
             try:
-                X = sm.add_constant(aligned[["mkt", "sec"]])
+                X = sm.add_constant(aligned[["mkt"] + list(covariate_cols.keys())])
                 y = aligned[t]
                 model = sm.OLS(y, X).fit()
                 cf = model.params
-                if not cf.isna().any() and len(cf) == 3:
+                if not cf.isna().any() and len(cf) == len(covariate_cols) + 2:
                     beta_hist_implied[t] = cf["mkt"]
-                    beta_sector_implied[t] = cf["sec"]
+                    beta_sector_implied[t] = cf["sec"] if "sec" in covariate_cols else 0.0
+                    beta_country_implied[t] = cf["pais"] if "pais" in covariate_cols else 0.0
+                    beta_fx_implied[t] = cf["fx"] if "fx" in covariate_cols else 0.0
                     fit_ok = True
             except Exception:
                 fit_ok = False
@@ -937,20 +1130,35 @@ for t in selected_tickers:
         else:
             beta_hist_implied[t] = 1.0
         beta_sector_implied[t] = 0.0
+        beta_country_implied[t] = 0.0
+        beta_fx_implied[t] = 0.0
 
 beta_hist_arr = np.array([beta_hist_implied[t] for t in selected_tickers])
 beta_sector_arr = np.array([beta_sector_implied[t] for t in selected_tickers])
+beta_country_arr = np.array([beta_country_implied[t] for t in selected_tickers])
+beta_fx_arr = np.array([beta_fx_implied[t] for t in selected_tickers])
+
+beta_mercado = beta_hist_arr
+beta_sector = beta_sector_arr
+beta_pais = beta_country_arr
+beta_fx = beta_fx_arr
 
 print(f"     beta_mercado (primeros 3):        {beta_hist_arr[0]:.4f} | {beta_hist_arr[1]:.4f} | {beta_hist_arr[2]:.4f}")
 print(f"     beta_sector (primeros 3):          {beta_sector_arr[0]:.4f} | {beta_sector_arr[1]:.4f} | {beta_sector_arr[2]:.4f}")
+print(f"     beta_pais (primeros 3):            {beta_country_arr[0]:.4f} | {beta_country_arr[1]:.4f} | {beta_country_arr[2]:.4f}")
+print(f"     beta_fx (primeros 3):              {beta_fx_arr[0]:.4f} | {beta_fx_arr[1]:.4f} | {beta_fx_arr[2]:.4f}")
 
-# --- Matriz de factores F: MKT + cada sector presente ------------------------
-factor_names = ["MKT"] + sectores_unicos
+# --- Matriz de factores F: MKT + cada sector presente + cada pais presente + cada moneda presente ---
+factor_names = ["MKT"] + sectores_unicos + paises_unicos + currencies_presentes
 
 factor_returns_mat = pd.DataFrame(index=log_returns.index, columns=factor_names, dtype=float)
 factor_returns_mat["MKT"] = r_mkt_full.reindex(log_returns.index)
 for s in sectores_unicos:
     factor_returns_mat[s] = log_returns[s]
+for p in paises_unicos:
+    factor_returns_mat[p] = log_returns[p]
+for c in currencies_presentes:
+    factor_returns_mat[c] = fx_weekly_returns[c].reindex(log_returns.index)
 
 corr_factors = factor_returns_mat.corr()
 
@@ -961,6 +1169,15 @@ for s in sectores_unicos:
     if pd.isna(iv_s) or iv_s <= 0:
         iv_s = log_returns[s].std() * math.sqrt(annualization_factor)
     iv_factor[s] = iv_s
+for p in paises_unicos:
+    iv_p = get_atm_iv_safe(p) if use_iv_for_horizon else np.nan
+    if pd.isna(iv_p) or iv_p <= 0:
+        iv_p = log_returns[p].std() * math.sqrt(annualization_factor)
+    iv_factor[p] = iv_p
+for c in currencies_presentes:
+    # Polygon no cubre opciones sobre pares FX - se usa volatilidad historica del par
+    iv_c = fx_weekly_returns[c].std() * math.sqrt(annualization_factor)
+    iv_factor[c] = iv_c
 
 iv_factor_weekly = np.array([iv_factor[f] / math.sqrt(annualization_factor) for f in factor_names])
 D_factor = np.diag(iv_factor_weekly)
@@ -975,11 +1192,18 @@ for i, t in enumerate(selected_tickers):
     if sec_etf is not None:
         j = factor_names.index(sec_etf)
         B_load[i, j] = beta_sector_implied[t]
+    pais_etf = asset_country_etf.get(t)
+    if pais_etf is not None:
+        j = factor_names.index(pais_etf)
+        B_load[i, j] = beta_country_implied[t]
+    cur = asset_currency.get(t)
+    if use_fx_factor and cur is not None and cur in currencies_presentes:
+        j = factor_names.index(cur)
+        B_load[i, j] = beta_fx_implied[t]
 
 Cov_explained = B_load @ F_mat @ B_load.T
 
 print(f"     diag(Cov_explained) rango (semanal): {np.diag(Cov_explained).min():.6f} - {np.diag(Cov_explained).max():.6f}")
-
 # ==============================================================================
 # VOLATILIDAD OBJETIVO POR ACTIVO: IV vs HISTORICA (shrinkage), o IV pura
 # ==============================================================================
@@ -1011,11 +1235,31 @@ idio_var = np.maximum(vol_final_weekly ** 2 - explained_var, 1e-8)
 cov_mat = Cov_explained + np.diag(idio_var)
 cov_mat = pd.DataFrame(cov_mat, index=selected_tickers, columns=selected_tickers)
 
-print(f"     varianza explicada por mercado+sector (rango): {explained_var.min():.6f} - {explained_var.max():.6f}")
+print(f"     varianza explicada por mercado+sector+pais+fx (rango): {explained_var.min():.6f} - {explained_var.max():.6f}")
 print(f"     varianza idiosincratica anadida (rango):       {idio_var.min():.6f} - {idio_var.max():.6f}")
 print(f"     diag(cov_mat) final rango:         {np.diag(cov_mat.values).min():.6f} - {np.diag(cov_mat.values).max():.6f}")
 print(f"     sqrt(diag(cov_mat)) = vol semanal: {np.sqrt(np.diag(cov_mat.values)).min() * 100:.4f}% - "
       f"{np.sqrt(np.diag(cov_mat.values)).max() * 100:.4f}%")
+
+# ==============================================================================
+# BLEND CON COVARIANZA HISTORICA SIMPLE (correccion de subestimacion de
+# correlaciones cruzadas por insuficiencia del modelo de factores)
+# ==============================================================================
+cov_hist_simple = log_returns_selected.cov().values
+
+hist_shrink_alpha = 0.35  # 0 = solo factor model, 1 = solo historica pura
+
+off_diag_factor = cov_mat.values - np.diag(np.diag(cov_mat.values))
+off_diag_hist = cov_hist_simple - np.diag(np.diag(cov_hist_simple))
+diff_offdiag = np.abs(off_diag_hist - off_diag_factor)
+print(f"\n  BLEND CON COVARIANZA HISTORICA (alpha={hist_shrink_alpha:.2f}):")
+print(f"     |cov_hist - cov_factor| fuera de diagonal, promedio: {diff_offdiag[np.triu_indices_from(diff_offdiag, k=1)].mean():.6f}")
+print(f"     |cov_hist - cov_factor| fuera de diagonal, max:      {diff_offdiag[np.triu_indices_from(diff_offdiag, k=1)].max():.6f}")
+
+cov_mat_values = (1 - hist_shrink_alpha) * cov_mat.values + hist_shrink_alpha * cov_hist_simple
+cov_mat = pd.DataFrame(cov_mat_values, index=selected_tickers, columns=selected_tickers)
+
+print(f"     diag(cov_mat) tras blend, rango:   {np.diag(cov_mat.values).min():.6f} - {np.diag(cov_mat.values).max():.6f}")
 
 eig_vals = np.linalg.eigvalsh(cov_mat.values)
 print(f"  Eigenvalue minimo (Sigma final): {eig_vals.min():.6f}")
@@ -1029,11 +1273,12 @@ if not np.all(eig_vals >= -1e-8):
         index=selected_tickers, columns=selected_tickers
     )
 
-print(f"  OK cov_mat final construida (modelo 2 factores): {cov_mat.shape[0]} x {cov_mat.shape[1]} activos")
+print(f"  OK cov_mat final construida (modelo de factores + blend historico): {cov_mat.shape[0]} x {cov_mat.shape[1]} activos")
 print(f"  Rango volatilidades implicitas: {iv_final.min() * 100:.1f}% - {iv_final.max() * 100:.1f}% (anualizado)")
 print(f"  Rango beta_mercado: {beta_hist_arr.min():.3f} - {beta_hist_arr.max():.3f} | "
-      f"Rango beta_sector: {beta_sector_arr.min():.3f} - {beta_sector_arr.max():.3f}")
-
+      f"Rango beta_sector: {beta_sector_arr.min():.3f} - {beta_sector_arr.max():.3f} | "
+      f"Rango beta_pais: {beta_country_arr.min():.3f} - {beta_country_arr.max():.3f} | "
+      f"Rango beta_fx: {beta_fx_arr.min():.3f} - {beta_fx_arr.max():.3f}")
 # === OPTIMIZACION MINIMA VARIANZA (quadprog) =================================
 n_etf_en_pool = sum(1 for t in selected_tickers if t in etf_universe_tickers)
 if use_etf_constraint:
@@ -1045,6 +1290,15 @@ if use_etf_constraint:
         print("     estacionalidad/Delta - la restriccion de % ETF no tendra efecto.")
         print("     Revisa volatility_percentile, correlation_percentile o delta_min si")
         print("     quieres que mas ETFs lleguen a esta etapa.")
+
+n_fx_en_pool = sum(1 for t in selected_tickers if get_currency_for_ticker(t) != "USD")
+if use_fx_factor:
+    print(f"[INFO] Restriccion de exposicion cambiaria activa: maximo {max_fx_exposure * 100:.0f}% "
+          f"del capital invertido en tickers no-USD")
+    print(f"[INFO] Tickers no-USD en el pool tras filtros previos: {n_fx_en_pool} de {len(selected_tickers)} activos")
+    if n_fx_en_pool == 0:
+        print("  ADVERTENCIA Ningun ticker no-USD sobrevivio a los filtros previos - la restriccion")
+        print("     de exposicion cambiaria no tendra efecto.")
 
 print(f"\n[INFO] Ejecutando optimizacion iterativa - maximo {max_assets_in_portfolio} activos...\n")
 
@@ -1075,13 +1329,26 @@ def run_minvar_qp(tickers_subset):
     is_etf_vec = np.array([1.0 if t in etf_universe_tickers else 0.0 for t in tickers_subset])
     has_etf = is_etf_vec.sum() > 0
 
-    Amat_full = Amat_base
-    bvec_full = bvec_base
+    is_fx_vec = np.array([1.0 if get_currency_for_ticker(t) != "USD" else 0.0 for t in tickers_subset])
+    has_fx = is_fx_vec.sum() > 0
+
+    extra_cols = []
+    extra_b = []
     if use_etf_constraint and has_etf:
         a_etf_min = is_etf_vec - etf_min_weight
         a_etf_max = etf_max_weight - is_etf_vec
-        Amat_full = np.column_stack([Amat_base, a_etf_min, a_etf_max])
-        bvec_full = np.concatenate([bvec_base, [0.0, 0.0]])
+        extra_cols += [a_etf_min, a_etf_max]
+        extra_b += [0.0, 0.0]
+    if use_fx_factor and has_fx:
+        a_fx_max = max_fx_exposure - is_fx_vec
+        extra_cols += [a_fx_max]
+        extra_b += [0.0]
+
+    Amat_full = Amat_base
+    bvec_full = bvec_base
+    if extra_cols:
+        Amat_full = np.column_stack([Amat_base] + extra_cols)
+        bvec_full = np.concatenate([bvec_base, extra_b])
 
     def solve_attempt(Amat_try, bvec_try):
         try:
@@ -1094,8 +1361,9 @@ def run_minvar_qp(tickers_subset):
 
     w = solve_attempt(Amat_full, bvec_full)
 
-    if w is None and use_etf_constraint and has_etf:
-        print("  ADVERTENCIA Restriccion de % ETF infactible para este subset - optimizando sin ella")
+    if w is None and extra_cols:
+        print("  ADVERTENCIA Restriccion de % ETF/exposicion cambiaria infactible para este subset - "
+              "optimizando sin restricciones adicionales")
         w = solve_attempt(Amat_base, bvec_base)
 
     if w is None:
@@ -1154,8 +1422,9 @@ if w_last_valid is None:
     raise RuntimeError(
         "Error: la optimizacion de minima varianza no encontro ninguna solucion factible.\n"
         "   Revisa: (1) que cov_mat sea PSD, (2) min_weight_per_asset * n_activos <= max_total_weight,\n"
-        "   (3) max_weight_per_asset * n_activos >= min_total_weight, y (4) la restriccion ETF\n"
-        "   (etf_min_weight/etf_max_weight) si use_etf_constraint = True."
+        "   (3) max_weight_per_asset * n_activos >= min_total_weight, (4) la restriccion ETF\n"
+        "   (etf_min_weight/etf_max_weight) si use_etf_constraint = True, y (5) la restriccion\n"
+        "   de exposicion cambiaria (max_fx_exposure) si use_fx_factor = True."
     )
 
 w_iter = w_last_valid
@@ -1393,6 +1662,9 @@ if abs(metrics_minvar["Cash_Position"]) > 0.001:
 print(f"  Activos en portafolio : {len(w_final)}")
 print(f"  Peso maximo           : {w_final.max() * 100:.2f}% ({w_final.index[0]})")
 print(f"  Concentracion top 3   : {w_final.head(3).sum() * 100:.2f}%")
+
+fx_weight_final = sum(w_final.get(t, 0.0) for t in w_final.index if get_currency_for_ticker(t) != "USD")
+print(f"  Exposicion cambiaria  : {fx_weight_final * 100:.2f}% (limite: {max_fx_exposure * 100:.0f}%)")
 print("=" * 65 + "\n")
 
 # ==============================================================================
@@ -1485,6 +1757,7 @@ summary_table = pd.DataFrame({
         "Sharpe Semanal (raw)",
         "Peso Total Invertido",
         "Posicion en Efectivo",
+        "Exposicion Cambiaria",
     ],
     "Valor": [
         f"{metrics_minvar['Return_Horizon'] * 100:.2f}%",
@@ -1501,6 +1774,7 @@ summary_table = pd.DataFrame({
         round((metrics_minvar["Return_Weekly"] - risk_free_rate_weekly) / metrics_minvar["Risk_Weekly"], 3),
         f"{metrics_minvar['Total_Weight'] * 100:.2f}%",
         f"{metrics_minvar['Cash_Position'] * 100:.2f}%",
+        f"{fx_weight_final * 100:.2f}%",
     ],
 })
 
