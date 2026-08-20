@@ -1,5 +1,5 @@
 # ==============================================================================
-# OPTIMIZACION DE PORTAFOLIOS - MINIMA VARIANZA (VARIANTE ESTACIONAL)
+# OPTIMIZACION DE PORTAFOLIOS - MINIMA VARIANZA 
 # ==============================================================================
 
 import warnings
