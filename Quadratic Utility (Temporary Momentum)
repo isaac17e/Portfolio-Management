@@ -1,6 +1,5 @@
 # ===============================================
 # Script: Optimizacion de portafolio - Utilidad Cuadratica
-# Version: horizonte libre (as_of_date + horizon_months)
 # ===============================================
 
 import warnings
@@ -26,6 +25,9 @@ import quadprog
 
 import matplotlib.pyplot as plt
 
+# ------------------------------------------------
+# API KEY vía Colab Secrets
+# ------------------------------------------------
 from google.colab import userdata
 POLYGON_API_KEY = userdata.get('PolygonAPI')
 
@@ -39,12 +41,7 @@ n_top_nasdaq = 200
 n_top_sp500 = 200
 n_top_int = 100
 
-# Fecha de referencia del portafolio y horizonte de inversion en meses.
-# Reemplaza el antiguo esquema de "mes(es) de rebalanceo" fijo: ahora el
-# portafolio se puede construir cualquier dia del mes, con vista a
-# horizon_months meses hacia adelante desde as_of_date.
-as_of_date = date.today()
-horizon_months = 3
+rebalance_months = [8]
 
 target_years = list(range(2014, 2026))
 mdd_start_year = 2014
@@ -61,8 +58,8 @@ weight_sharpe = 0.4
 weight_low_vol = 0.35
 weight_decorr = 0.25
 
-n_pre_filter = 60
-n_filter_candidates = 40
+n_pre_seasonal = 60
+n_divers_candidates = 40
 
 # Seleccion conjunta de candidatos (h_i / J_ij) via QUBO/Ising.
 # Por debajo del umbral: fuerza bruta (optimo exacto). Por encima: Simulated Annealing.
@@ -72,35 +69,22 @@ qubo_sa_iterations = 20000
 volatility_percentile = 0.60
 correlation_percentile = 0.65
 
-# --- Filtro de volatilidad reciente (reemplaza al antiguo filtro estacional) ---
-# Ventana rolling anclada a as_of_date, en retornos DIARIOS (no semanales) para
-# reducir el ruido de la estimacion sin perder "recencia". Se escala con el
-# horizonte de inversion, pero con piso y techo para no diluir la señal.
-recent_vol_window_min_weeks = 13   # ~1 trimestre, piso incluso para horizontes cortos
-recent_vol_window_max_weeks = 26   # ~6 meses, techo incluso para horizontes largos
-recent_vol_ratio_max = 1.35        # vol reciente anualizada / vol general anualizada
-recent_vol_min_survivors = 18
+seasonal_min_weeks = 40
 
-# --- Tope universal de tenor de opciones (aplica a delta real, covarianza
-# implicita, skew y al nuevo filtro de IV vs vol. reciente) ---
-# Vencimientos lejanos son menos liquidos y su IV/greeks son menos confiables,
-# asi que el tenor de opciones nunca excede este limite, sin importar cuan
-# largo sea horizon_months.
-options_dte_cap_days = 90
+# Umbral de exclusion estacional: si vol_estacional_anualizada / vol_general_anualizada
+# de un activo supera este multiplicador, se descarta (no se penaliza, se excluye)
+seasonal_vol_ratio_max = 1.35
 
-# --- Filtro de IV vs volatilidad reciente (flujo de opciones / forward-looking) ---
-# Si la IV de mercado (al tenor topado) supera por mucho la vol. realizada
-# reciente, el activo se descarta: el mercado de opciones esta pricing un
-# movimiento que no se refleja aun en el comportamiento reciente del precio.
-iv_vs_realized_ratio_max = 1.35
-iv_min_survivors = 14
+# Piso minimo de activos que deben sobrevivir al filtro estacional; si el umbral
+# deja menos que esto, se relaja tomando los siguientes mejores por ratio hasta alcanzarlo
+seasonal_min_survivors = 18
 
 # Filtro de skew (put vs call ~25-delta) sobre el grupo final, antes de la matriz de covarianza
 skew_moneyness_put = 0.90    # proxy de strike put ~25-delta (90% del spot)
 skew_moneyness_call = 1.10   # proxy de strike call ~25-delta (110% del spot)
 skew_lookback_months = 12    # ventana para reconstruir el skew historico "normal" del activo
 skew_z_threshold = 1.5       # se descarta si (skew_hoy - media_hist) / sd_hist supera esto
-skew_min_survivors = 14      # piso minimo tras el filtro de skew (se repone desde el pool de vol. reciente)
+skew_min_survivors = 14      # piso minimo tras el filtro de skew (se repone desde el pool estacional)
 
 correlation_order = 0
 
@@ -119,17 +103,24 @@ pct_etf_deseado = 0.40     # ej. 15% ETFs / 85% acciones individuales
 pct_etf_tolerancia = 0.05  # banda +/- alrededor del porcentaje deseado
 
 # === VALIDACION DE PARAMETROS ===
-if not (1 <= horizon_months <= 24):
-    raise ValueError("Error: horizon_months debe estar entre 1 y 24")
+if not (1 <= len(rebalance_months) <= 3):
+    raise ValueError("Error: rebalance_months debe contener 1, 2 o 3 meses")
+if any(m < 1 or m > 12 for m in rebalance_months):
+    raise ValueError("Error: Los meses deben estar entre 1 y 12")
 if not (0 <= pct_etf_deseado <= 1):
     raise ValueError("Error: pct_etf_deseado debe estar entre 0 y 1 (ej. 0.30 = 30%)")
 if not (0 <= pct_etf_tolerancia <= 0.5):
     raise ValueError("Error: pct_etf_tolerancia debe estar entre 0 y 0.5")
 
-horizon_desc = f"{horizon_months} mes(es) desde {as_of_date.isoformat()}"
+horizon_months = len(rebalance_months)
+MONTH_ABB = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+MONTH_NAME = ["", "January", "February", "March", "April", "May", "June", "July",
+              "August", "September", "October", "November", "December"]
+horizon_label = "-".join(MONTH_ABB[m] for m in rebalance_months)
+target_months = rebalance_months
 
 print("\n" + "=" * 60)
-print(f"FECHA DE REFERENCIA (as_of_date): {as_of_date.isoformat()} | HORIZONTE DE INVERSION: {horizon_months} mes(es)")
+print(f"MES(ES) DE REBALANCEO: {horizon_label}")
 lb_txt = f" (ultimos {lookback_months} meses)" if lookback_months is not None else " (sin restriccion de ventana)"
 print("ENTRENAMIENTO: todo el historico mensual disponible" + lb_txt)
 print("=" * 60 + "\n")
@@ -349,7 +340,7 @@ def polygon_get_current_skew25(ticker, target_dte, dte_tol=10):
 
 
 def polygon_find_contract_asof(ticker, contract_type, strike_target, expiration_target,
-                                as_of_date_, strike_band=0.06, expiration_band_days=12,
+                                as_of_date, strike_band=0.06, expiration_band_days=12,
                                 api_key=None):
     api_key = api_key or POLYGON_API_KEY
     strike_min = strike_target * (1 - strike_band)
@@ -362,7 +353,7 @@ def polygon_find_contract_asof(ticker, contract_type, strike_target, expiration_
         f"underlying_ticker={polygon_format_ticker(ticker)}&contract_type={contract_type}&"
         f"strike_price.gte={strike_min:.4f}&strike_price.lte={strike_max:.4f}&"
         f"expiration_date.gte={exp_min}&expiration_date.lte={exp_max}&"
-        f"as_of={pd.Timestamp(as_of_date_).strftime('%Y-%m-%d')}&limit=100&apiKey={api_key}"
+        f"as_of={pd.Timestamp(as_of_date).strftime('%Y-%m-%d')}&limit=100&apiKey={api_key}"
     )
     try:
         resp = polygon_api_request(url_ref)
@@ -414,6 +405,11 @@ def polygon_get_contract_close_near(contract_ticker, target_date, window_days=5,
 def reconstruct_asset_skew_history(ticker, spot_series, sample_dates, target_dte,
                                     moneyness_put, moneyness_call, rf):
     # spot_series: DataFrame con columnas ['date', 'adjusted'] ordenado ascendente
+    # NOTA: para tickers internacionales, Polygon no tiene contratos de referencia
+    # (polygon_find_contract_asof siempre devuelve None), asi que esta funcion
+    # nunca llega a usar spot_series para ellos - el filtro de skew los deja
+    # pasar por defecto ("mantener") sin importar la moneda del spot. Por eso
+    # spot_series no se convierte a USD aqui: no tiene efecto practico hoy.
     skews = [np.nan] * len(sample_dates)
     for i, fecha_i in enumerate(sample_dates):
         fecha_i = pd.Timestamp(fecha_i)
@@ -586,7 +582,12 @@ else:
 # ================================================
 etf_core = ["SPY", "QQQ", "VOO", "VTI", "VYM", "IWM", "GLD", "SLV", "USO", "PDBC", "HYG", "VNQ"]
 
-etf_sectoriales = ["XLK", "XLV", "XLF", "XLE", "XLY", "XLP", "XLI", "XLB", "XLU", "XLRE", "XLC"]
+# VOX (Vanguard Communication Services ETF, inception 2004) se agrega junto a XLC:
+# XLC sigue siendo el ETF de referencia para el mapeo SIC->sector de acciones US
+# (sector_keywords), pero el mapeo manual de internacionales usa VOX para el
+# sector de Comunicaciones (ver international_sector_etf_map mas abajo), asi
+# que VOX debe estar en el universo para poder descargarse y cotizar su IV.
+etf_sectoriales = ["XLK", "XLV", "XLF", "XLE", "XLY", "XLP", "XLI", "XLB", "XLU", "XLRE", "XLC", "VOX"]
 
 etf_subsectoriales = [
     "SMH", "SOXX", "IGV", "CIBR", "HACK", "SKYY", "BOTZ", "ROBO", "BUG",
@@ -636,6 +637,38 @@ international_tickers_full = [
 international_tickers = international_tickers_full[:n_top_int]
 
 # ================================================
+# MAPEO DE MONEDA POR SUFIJO DE TICKER + PARES FX (para conversion a USD)
+# ================================================
+
+fx_pairs = {
+    "CAD": {"ticker": "CAD=X", "invert": True},
+    "EUR": {"ticker": "EURUSD=X", "invert": False},
+    "GBP": {"ticker": "GBPUSD=X", "invert": False},
+    "JPY": {"ticker": "JPY=X", "invert": True},
+}
+ticker_currency_by_suffix = {
+    ".TO": "CAD",
+    ".DE": "EUR",
+    ".PA": "EUR",
+    ".MC": "EUR",
+    ".L": "GBP",
+    ".T": "JPY",
+}
+ticker_currency_override = {
+    "HSBC": "GBP",
+    "BP": "GBP",
+}
+
+
+def get_currency_for_ticker(ticker):
+    if ticker in ticker_currency_override:
+        return ticker_currency_override[ticker]
+    for suf, cur in ticker_currency_by_suffix.items():
+        if ticker.endswith(suf):
+            return cur
+    return "USD"
+
+# ================================================
 # COMBINAR Y LIMPIAR
 # ================================================
 print("\nCombinando y limpiando tickers...")
@@ -680,19 +713,55 @@ print(f"Total tickers FINAL (unicos): {len(all_tickers)}")
 # ================================================
 # DESCARGA DE PRECIOS (helper generico yfinance)
 # ================================================
-def download_period_returns(tickers, start, end, period="1mo"):
+def download_fx_prices(start, end, period="1mo"):
     """
-    Descarga precios ajustados y calcula retornos por periodo (diario, semanal o mensual).
+    Descarga los pares FX necesarios a la misma granularidad que los precios
+    que se van a convertir, y devuelve un dict {moneda: Series} ya en
+    USD-por-unidad-de-moneda-local (invertido cuando corresponde).
+    """
+    fx_prices = {}
+    for cur, info in fx_pairs.items():
+        try:
+            hist = yf.Ticker(info["ticker"]).history(start=start, end=end, interval=period, auto_adjust=True)
+            if hist is None or hist.empty:
+                continue
+            s = hist["Close"].copy()
+            s.index = pd.to_datetime(s.index).tz_localize(None)
+            if info["invert"]:
+                s = 1 / s
+            fx_prices[cur] = s.sort_index()
+        except Exception:
+            pass
+    return fx_prices
+
+
+def download_period_returns(tickers, start, end, period="1mo", fx_prices=None):
+    """
+    Descarga precios ajustados y calcula retornos por periodo (mensual o semanal).
+    Si fx_prices trae la serie de la moneda de un ticker no-USD, el precio se
+    convierte a USD (ultimo valor FX conocido, ffill) antes de calcular el
+    retorno - asi el retorno queda en base USD real, no en moneda local.
     Devuelve DataFrame largo: columns = ['symbol', 'date', 'return', 'adjusted']
     """
     all_rows = []
     n = len(tickers)
+    n_convertidos = 0
     for i, tk in enumerate(tickers, start=1):
         try:
             hist = yf.Ticker(tk).history(start=start, end=end, interval=period, auto_adjust=True)
             if hist is None or hist.empty:
                 continue
             hist = hist[["Close"]].rename(columns={"Close": "adjusted"})
+            hist.index = pd.to_datetime(hist.index).tz_localize(None)
+
+            cur = get_currency_for_ticker(tk)
+            if cur != "USD" and fx_prices is not None and cur in fx_prices:
+                fx_aligned = fx_prices[cur].reindex(
+                    fx_prices[cur].index.union(hist.index)
+                ).sort_index().ffill().reindex(hist.index)
+                hist["adjusted"] = hist["adjusted"] * fx_aligned
+                n_convertidos += 1
+
             hist["return"] = hist["adjusted"].pct_change()
             hist = hist.dropna(subset=["return"])
             hist["symbol"] = tk
@@ -703,6 +772,8 @@ def download_period_returns(tickers, start, end, period="1mo"):
             pass
         if i % 25 == 0 or i == n:
             print(f"   Descargados {i}/{n} tickers...")
+    if n_convertidos > 0:
+        print(f"   OK Tickers convertidos a USD en esta descarga: {n_convertidos}")
     if not all_rows:
         return pd.DataFrame(columns=["symbol", "date", "return", "adjusted"])
     return pd.concat(all_rows, ignore_index=True)
@@ -711,8 +782,13 @@ def download_period_returns(tickers, start, end, period="1mo"):
 start_date = f"{min(target_years)}-01-01"
 end_date = f"{max(target_years) + 1}-12-31"
 
+print("Descargando pares FX (mensual) para conversion a USD...")
+fx_prices_monthly = download_fx_prices(start_date, end_date, period="1mo")
+print(f"   OK Pares FX mensuales disponibles: {', '.join(fx_prices_monthly.keys()) if fx_prices_monthly else '(ninguno)'}")
+
 print("Descargando datos de precios MENSUALES...")
-df_prices_monthly = download_period_returns(all_tickers, start_date, end_date, period="1mo")
+df_prices_monthly = download_period_returns(all_tickers, start_date, end_date, period="1mo",
+                                             fx_prices=fx_prices_monthly)
 df_prices_monthly = df_prices_monthly.rename(columns={"return": "monthly_return"})
 
 df_prices = df_prices_monthly.copy()
@@ -728,41 +804,35 @@ print(f"Tickers con al menos 1 observacion: {df_prices['symbol'].nunique()}")
 
 # === BENCHMARK (SPY) ===
 print("Procesando benchmark (SPY)...")
-benchmark_prices = download_period_returns(["SPY"], start_date, end_date, period="1mo")
+benchmark_prices = download_period_returns(["SPY"], start_date, end_date, period="1mo",
+                                            fx_prices=fx_prices_monthly)
 benchmark_prices = benchmark_prices.rename(columns={"return": "benchmark_return"})[["date", "benchmark_return"]]
 if lookback_months is not None:
     cutoff_date = benchmark_prices["date"].max() - relativedelta(months=lookback_months - 1)
     benchmark_prices = benchmark_prices[benchmark_prices["date"] >= cutoff_date]
 
-# ================================================
-# RETORNOS DIARIOS RECIENTES PARA FILTRO DE VOLATILIDAD RECIENTE
-# (reemplaza al antiguo filtro estacional por mes calendario)
-# ================================================
-recent_vol_window_weeks = int(min(max(round(horizon_months * 4), recent_vol_window_min_weeks),
-                                   recent_vol_window_max_weeks))
-print(f"Descargando retornos DIARIOS recientes para filtro de volatilidad reciente "
-      f"(ventana={recent_vol_window_weeks} semanas, ancladas a {as_of_date.isoformat()})...")
+# === RETORNOS SEMANALES PARA FILTRO ESTACIONAL ===
+print(f"Descargando pares FX (semanal) para conversion a USD...")
+fx_prices_weekly = download_fx_prices(start_date, end_date, period="1wk")
 
-recent_vol_start = (pd.Timestamp(as_of_date) - timedelta(weeks=recent_vol_window_weeks)).strftime("%Y-%m-%d")
-recent_vol_end = (pd.Timestamp(as_of_date) + timedelta(days=1)).strftime("%Y-%m-%d")
-df_daily_recent = download_period_returns(all_tickers, recent_vol_start, recent_vol_end, period="1d")
-df_daily_recent = df_daily_recent.rename(columns={"return": "daily_return"})
+print(f"Descargando retornos SEMANALES para filtro estacional ({horizon_label})...")
+df_weekly_seasonal = download_period_returns(all_tickers, start_date, end_date, period="1wk",
+                                              fx_prices=fx_prices_weekly)
+df_weekly_seasonal = df_weekly_seasonal.rename(columns={"return": "weekly_return"})
+df_weekly_seasonal = df_weekly_seasonal[df_weekly_seasonal["date"].dt.month.isin(rebalance_months)]
 
-recent_vol_min_obs = max(int(recent_vol_window_weeks * 5 * 0.6), 10)
-
-recent_vol_stats = (
-    df_daily_recent.groupby("symbol")["daily_return"]
-    .agg(recent_vol_sd="std", recent_vol_n_obs="count")
+seasonal_sd_stats = (
+    df_weekly_seasonal.groupby("symbol")["weekly_return"]
+    .agg(seasonal_sd="std", seasonal_n_obs="count")
     .reset_index()
 )
-recent_vol_stats["recent_vol_annual"] = recent_vol_stats["recent_vol_sd"] * math.sqrt(252)
-recent_vol_stats = recent_vol_stats[
-    (recent_vol_stats["recent_vol_n_obs"] >= recent_vol_min_obs)
-    & (recent_vol_stats["recent_vol_sd"] > 0)
-    & recent_vol_stats["recent_vol_sd"].notna()
-].sort_values("recent_vol_sd").reset_index(drop=True)
+seasonal_sd_stats = seasonal_sd_stats[
+    (seasonal_sd_stats["seasonal_n_obs"] >= seasonal_min_weeks)
+    & (seasonal_sd_stats["seasonal_sd"] > 0)
+    & seasonal_sd_stats["seasonal_sd"].notna()
+].sort_values("seasonal_sd").reset_index(drop=True)
 
-print(f"Tickers con volatilidad reciente calculable: {len(recent_vol_stats)}")
+print(f"Tickers con SD estacional calculable: {len(seasonal_sd_stats)}")
 
 # ================================================
 # ESTADISTICAS DESCRIPTIVAS
@@ -1038,20 +1108,45 @@ def select_optimal_candidates(df, n_candidates):
     return selected
 
 
-ticker_candidates = select_optimal_candidates(combined_stats, n_pre_filter)
-print(f"\nPool pre-filtro: {len(ticker_candidates)} candidatos\n")
+ticker_candidates = select_optimal_candidates(combined_stats, n_pre_seasonal)
+print(f"\nPool pre-filtro estacional: {len(ticker_candidates)} candidatos\n")
 
 # ================================================
-# TENOR DE OPCIONES OBJETIVO (Polygon) - tope universal
+# FILTRO ESTACIONAL (primera pasada, informativa)
 # ================================================
-target_dte_polygon = min(max(round(horizon_months * 30), 15), options_dte_cap_days)
-print(f"Tenor de opciones objetivo (Polygon): {target_dte_polygon} dias "
-      f"(horizonte={horizon_months}m, tope universal={options_dte_cap_days}d)\n")
+print(f"Aplicando filtro estacional ({horizon_label})...")
+
+seasonal_candidates = (
+    seasonal_sd_stats[seasonal_sd_stats["symbol"].isin(ticker_candidates)]
+    .sort_values("seasonal_sd").head(n_divers_candidates)
+)
+
+n_con_seasonal = len(seasonal_candidates)
+print(f"Candidatos previos: {len(ticker_candidates)} | Con SD estacional: {n_con_seasonal} | "
+      f"Seleccionados: {n_con_seasonal}")
+
+if n_con_seasonal < n_divers_candidates * 0.5:
+    print(f"Advertencia: solo {n_con_seasonal} tickers sobrevivieron el filtro estacional.")
+
+seasonal_display = seasonal_candidates.merge(
+    combined_stats[["symbol", "sharpe_ratio_adjusted", "sd_return", "n_obs"]], on="symbol", how="left"
+)
+print(seasonal_display.to_string(index=False))
+
+ticker_candidates = seasonal_candidates["symbol"].tolist()
+print(f"\nConjunto FINAL para optimizacion: {len(ticker_candidates)} tickers\n")
+
+# Recalcular pool completo pre-estacional (se vuelve a usar el pool completo mas abajo,
+# igual que en el script R original)
+ticker_candidates = select_optimal_candidates(combined_stats, n_pre_seasonal)
+print(f"\nPool pre-filtro estacional: {len(ticker_candidates)} candidatos\n")
 
 # ================================================
 # DATOS DE MERCADO VIA POLYGON (IV, GRIEGAS, SECTOR)
 # ================================================
-print("Consultando datos de mercado (Polygon) para tickers estadounidenses...")
+print("\nConsultando datos de mercado (Polygon) para tickers estadounidenses...")
+
+target_dte_polygon = max(round(horizon_months * 30), 15)
 
 us_candidates = [t for t in ticker_candidates if is_us_ticker(t)]
 intl_candidates = [t for t in ticker_candidates if not is_us_ticker(t)]
@@ -1073,7 +1168,7 @@ n_polygon_ok = polygon_market_df["ok"].fillna(False).sum()
 print(f"  Datos de opciones obtenidos: {n_polygon_ok} de {len(us_candidates)} tickers US")
 
 stock_us_candidates = [t for t in us_candidates if t not in (etf_tickers + commodity_tickers)]
-print(f"  Clasificando sector de {len(stock_us_candidates)} acciones US...")
+print(f"  Clasificando sector de {len(stock_us_candidates)} acciones US (Polygon SIC)...")
 
 sector_map = {}
 for i, tk in enumerate(stock_us_candidates, start=1):
@@ -1082,7 +1177,46 @@ for i, tk in enumerate(stock_us_candidates, start=1):
         print(f"   Sector: {i}/{len(stock_us_candidates)}")
 
 n_sector_ok = sum(1 for v in sector_map.values() if v is not None)
-print(f"  Sector identificado: {n_sector_ok} de {len(stock_us_candidates)} acciones")
+print(f"  Sector identificado (Polygon SIC, US): {n_sector_ok} de {len(stock_us_candidates)} acciones")
+
+# === MAPEO DE SECTOR PARA CANDIDATOS INTERNACIONALES (mapeo manual, mismos
+# ETFs sectoriales ya presentes en etf_sectoriales - Polygon no tiene SIC
+# para emisores no listados en EE.UU., asi que estos siempre quedaban sin
+# sector y caian al promedio implicito global) ===
+international_sector_etf_map = {
+    # Canada (.TO)
+    "RY.TO": "XLF", "SHOP.TO": "XLK", "TD.TO": "XLF", "BN.TO": "XLF",
+    "ENB.TO": "XLE", "TRI.TO": "XLI", "BNS.TO": "XLF", "CP.TO": "XLI",
+    "CNQ.TO": "XLE", "AEM.TO": "XLB", "SU.TO": "XLE", "TRP.TO": "XLE",
+    "WCN.TO": "XLI", "FNV.TO": "XLB", "SAP.TO": "XLP",
+    # Alemania (.DE)
+    "SIE.DE": "XLI", "DTE.DE": "VOX", "ALV.DE": "XLF", "MBG.DE": "XLY",
+    "IFX.DE": "XLK", "BMW.DE": "XLY", "DB1.DE": "XLF", "DHL.DE": "XLI",
+    "DBK.DE": "XLF", "MUV2.DE": "XLF",
+    # Reino Unido (.L, y HSBC/BP sin sufijo)
+    "AZN.L": "XLV", "HSBC": "XLF", "ULVR.L": "XLP", "BP": "XLE",
+    "GSK.L": "XLV", "RIO.L": "XLB", "BATS.L": "XLP", "GLEN.L": "XLB",
+    "DGE.L": "XLP", "NG.L": "XLU",
+    # Francia (.PA)
+    "MC.PA": "XLY", "TTE.PA": "XLE", "SAN.PA": "XLV", "OR.PA": "XLP",
+    "SU.PA": "XLI", "AI.PA": "XLB", "BNP.PA": "XLF", "RMS.PA": "XLY",
+    "CS.PA": "XLF", "SAF.PA": "XLI", "CAP.PA": "XLK",
+    # Espana (.MC)
+    "ITX.MC": "XLY", "IBE.MC": "XLU", "BBVA.MC": "XLF", "SAN.MC": "XLF",
+    # Japon (.T)
+    "7203.T": "XLY", "6758.T": "XLY", "6861.T": "XLK", "8306.T": "XLF",
+    "9984.T": "VOX", "6367.T": "XLI", "6098.T": "XLI", "4063.T": "XLB",
+    "7974.T": "VOX", "9432.T": "VOX", "6501.T": "XLI", "7267.T": "XLY",
+    "8316.T": "XLF", "4568.T": "XLV", "6902.T": "XLY", "4502.T": "XLV",
+    "8031.T": "XLI",
+}
+
+stock_intl_candidates = [t for t in intl_candidates if t not in (etf_tickers + commodity_tickers)]
+for tk in stock_intl_candidates:
+    sector_map[tk] = international_sector_etf_map.get(tk)
+
+n_sector_intl_ok = sum(1 for t in stock_intl_candidates if sector_map.get(t) is not None)
+print(f"  Sector identificado (mapeo manual, internacionales): {n_sector_intl_ok} de {len(stock_intl_candidates)} acciones")
 
 print("  Consultando IV de ETFs sectoriales...")
 sector_etf_iv = {etf: np.nan for etf in etf_sectoriales}
@@ -1182,117 +1316,62 @@ if use_delta_filter:
 
     tickers_pass_delta = delta_df[(delta_df["delta"].isna()) | (delta_df["delta"] >= delta_min)]["symbol"].tolist()
     ticker_candidates = tickers_pass_delta
-    print(f"\nTras filtro Delta: {len(ticker_candidates)} tickers disponibles para los siguientes filtros\n")
+    print(f"\nTras filtro Delta (sobre pool pre-estacional): {len(ticker_candidates)} tickers disponibles "
+          f"para el filtro estacional\n")
 else:
     print("Filtro Delta desactivado\n")
     delta_named = {t: np.nan for t in ticker_candidates}
 
 # ================================================
-# FILTRO DE VOLATILIDAD RECIENTE (reemplaza al antiguo filtro estacional)
+# FILTRO ESTACIONAL (segunda pasada, por umbral de ratio)
 # ================================================
-print(f"Aplicando filtro de volatilidad reciente (ventana={recent_vol_window_weeks} semanas, "
-      f"ratio max={recent_vol_ratio_max:.2f}x)...")
+print(f"Aplicando filtro estacional ({horizon_label}) - exclusion por umbral (ratio max={seasonal_vol_ratio_max:.2f}x)...")
 
-recent_vol_ratio_stats = (
-    recent_vol_stats[recent_vol_stats["symbol"].isin(ticker_candidates)]
+seasonal_ratio_stats = (
+    seasonal_sd_stats[seasonal_sd_stats["symbol"].isin(ticker_candidates)]
     .merge(combined_stats[["symbol", "sharpe_ratio_adjusted", "sd_return", "n_obs"]], on="symbol", how="left")
 )
-recent_vol_ratio_stats = recent_vol_ratio_stats[
-    recent_vol_ratio_stats["sd_return"].notna() & (recent_vol_ratio_stats["sd_return"] > 0)
-].copy()
-recent_vol_ratio_stats["general_vol_anual"] = recent_vol_ratio_stats["sd_return"] * math.sqrt(12)
-recent_vol_ratio_stats["recent_vol_ratio"] = (
-    recent_vol_ratio_stats["recent_vol_annual"] / recent_vol_ratio_stats["general_vol_anual"]
+seasonal_ratio_stats = seasonal_ratio_stats[seasonal_ratio_stats["sd_return"].notna() & (seasonal_ratio_stats["sd_return"] > 0)].copy()
+seasonal_ratio_stats["seasonal_vol_anual"] = seasonal_ratio_stats["seasonal_sd"] * math.sqrt(52)
+seasonal_ratio_stats["general_vol_anual"] = seasonal_ratio_stats["sd_return"] * math.sqrt(12)
+seasonal_ratio_stats["seasonal_vol_ratio"] = (
+    seasonal_ratio_stats["seasonal_vol_anual"] / seasonal_ratio_stats["general_vol_anual"]
 )
-recent_vol_ratio_stats = recent_vol_ratio_stats.sort_values("recent_vol_ratio")
+seasonal_ratio_stats = seasonal_ratio_stats.sort_values("seasonal_vol_ratio")
 
 n_pool_post_delta = len(ticker_candidates)
-n_con_recent_vol = len(recent_vol_ratio_stats)
-print(f"Candidatos previos (post-Delta): {n_pool_post_delta} | Con ratio de vol. reciente calculable: {n_con_recent_vol}")
+n_con_seasonal = len(seasonal_ratio_stats)
+print(f"Candidatos previos (post-Delta): {n_pool_post_delta} | Con ratio estacional calculable: {n_con_seasonal}")
 
-recent_vol_pass = recent_vol_ratio_stats[recent_vol_ratio_stats["recent_vol_ratio"] <= recent_vol_ratio_max]
+seasonal_pass = seasonal_ratio_stats[seasonal_ratio_stats["seasonal_vol_ratio"] <= seasonal_vol_ratio_max]
 
-n_descartados = n_con_recent_vol - len(recent_vol_pass)
-print(f"Descartados por umbral (ratio > {recent_vol_ratio_max:.2f}x): {n_descartados} | "
-      f"Superan el filtro: {len(recent_vol_pass)}")
+n_descartados = n_con_seasonal - len(seasonal_pass)
+print(f"Descartados por umbral (ratio > {seasonal_vol_ratio_max:.2f}x): {n_descartados} | "
+      f"Superan el filtro: {len(seasonal_pass)}")
 
-if len(recent_vol_pass) < recent_vol_min_survivors:
-    print(f"Advertencia: solo {len(recent_vol_pass)} tickers superan el umbral - relajando hasta "
-          f"el piso minimo ({recent_vol_min_survivors})")
-    recent_vol_pass = recent_vol_ratio_stats.head(min(recent_vol_min_survivors, n_con_recent_vol))
+if len(seasonal_pass) < seasonal_min_survivors:
+    print(f"Advertencia: solo {len(seasonal_pass)} tickers superan el umbral - relajando hasta "
+          f"el piso minimo ({seasonal_min_survivors})")
+    seasonal_pass = seasonal_ratio_stats.head(min(seasonal_min_survivors, n_con_seasonal))
 
-if len(recent_vol_pass) > n_filter_candidates:
-    print(f"Pool post-umbral ({len(recent_vol_pass)}) supera el techo n_filter_candidates "
-          f"({n_filter_candidates}) - recortando por ratio ascendente")
-    recent_vol_pass = recent_vol_pass.sort_values("recent_vol_ratio").head(n_filter_candidates)
+if len(seasonal_pass) > n_divers_candidates:
+    print(f"Pool post-umbral ({len(seasonal_pass)}) supera el techo n_divers_candidates "
+          f"({n_divers_candidates}) - recortando por ratio ascendente")
+    seasonal_pass = seasonal_pass.sort_values("seasonal_vol_ratio").head(n_divers_candidates)
 
-recent_vol_candidates = recent_vol_pass.copy()
+seasonal_candidates = seasonal_pass.copy()
 
-disp = recent_vol_candidates.copy()
-disp["Vol_Reciente_Anual"] = disp["recent_vol_annual"].map(lambda x: f"{x * 100:.2f}%")
-disp["Vol_General_Anual"] = disp["general_vol_anual"].map(lambda x: f"{x * 100:.2f}%")
-disp["Ratio"] = disp["recent_vol_ratio"].map(lambda x: f"{x:.2f}x")
+disp = seasonal_candidates.copy()
+disp["SD_Estacional"] = disp["seasonal_sd"].map(lambda x: f"{x:.4f}")
+disp["SD_General"] = disp["sd_return"].map(lambda x: f"{x:.4f}")
+disp["Ratio_Anualizado"] = disp["seasonal_vol_ratio"].map(lambda x: f"{x:.2f}x")
 disp["Sharpe"] = disp["sharpe_ratio_adjusted"].map(lambda x: f"{x:.3f}")
-print(disp.rename(columns={"symbol": "Symbol", "n_obs": "Obs_Mensuales"})
-      [["Symbol", "Vol_Reciente_Anual", "Vol_General_Anual", "Ratio", "Sharpe", "Obs_Mensuales"]]
+print(disp.rename(columns={"symbol": "Symbol", "seasonal_n_obs": "Semanas", "n_obs": "Obs_Mensuales"})
+      [["Symbol", "SD_Estacional", "Semanas", "SD_General", "Ratio_Anualizado", "Sharpe", "Obs_Mensuales"]]
       .to_string(index=False))
 
-ticker_candidates = recent_vol_candidates["symbol"].tolist()
-print(f"\nConjunto tras filtro de volatilidad reciente: {len(ticker_candidates)} tickers\n")
-
-# ================================================
-# FILTRO DE IV vs VOLATILIDAD RECIENTE (flujo de opciones, forward-looking)
-# ================================================
-print(f"Aplicando filtro de IV vs volatilidad reciente (DTE={target_dte_polygon}d, "
-      f"ratio max={iv_vs_realized_ratio_max:.2f}x)...")
-
-recent_vol_lookup = dict(zip(recent_vol_stats["symbol"], recent_vol_stats["recent_vol_annual"]))
-poly_iv_lookup = polygon_market_df.set_index("symbol")["iv"].to_dict() if len(polygon_market_df) else {}
-poly_ok_lookup = polygon_market_df.set_index("symbol")["ok"].to_dict() if len(polygon_market_df) else {}
-
-iv_flow_rows = []
-for tk in ticker_candidates:
-    iv_tk = poly_iv_lookup.get(tk, np.nan)
-    ok_tk = bool(poly_ok_lookup.get(tk, False))
-    rv_tk = recent_vol_lookup.get(tk, np.nan)
-    if not ok_tk or pd.isna(iv_tk) or pd.isna(rv_tk) or rv_tk <= 0:
-        iv_flow_rows.append(dict(symbol=tk, iv=iv_tk, recent_vol=rv_tk, iv_ratio=np.nan, evaluable=False))
-        continue
-    iv_flow_rows.append(dict(symbol=tk, iv=iv_tk, recent_vol=rv_tk, iv_ratio=iv_tk / rv_tk, evaluable=True))
-
-iv_flow_df = pd.DataFrame(iv_flow_rows)
-n_evaluables = int(iv_flow_df["evaluable"].sum()) if len(iv_flow_df) else 0
-print(f"  Candidatos con IV de mercado evaluable: {n_evaluables} de {len(ticker_candidates)}")
-
-iv_flow_discard = iv_flow_df[iv_flow_df["evaluable"] & (iv_flow_df["iv_ratio"] > iv_vs_realized_ratio_max)] \
-    if len(iv_flow_df) else pd.DataFrame(columns=["symbol", "iv", "recent_vol", "iv_ratio"])
-
-iv_flow_keep = [t for t in ticker_candidates if t not in set(iv_flow_discard["symbol"])]
-
-print(f"  Descartados por IV anomala respecto a vol. reciente (ratio > {iv_vs_realized_ratio_max:.2f}x): "
-      f"{len(iv_flow_discard)}")
-
-if len(iv_flow_discard) > 0:
-    disp2 = iv_flow_discard.copy()
-    disp2["IV"] = disp2["iv"].map(lambda x: f"{x * 100:.1f}%")
-    disp2["Vol_Reciente"] = disp2["recent_vol"].map(lambda x: f"{x * 100:.1f}%")
-    disp2["Ratio"] = disp2["iv_ratio"].map(lambda x: f"{x:.2f}x")
-    print(disp2.rename(columns={"symbol": "Symbol"})[["Symbol", "IV", "Vol_Reciente", "Ratio"]].to_string(index=False))
-
-if len(iv_flow_keep) < iv_min_survivors:
-    reponer_iv_pool = [
-        t for t in recent_vol_ratio_stats.sort_values("recent_vol_ratio")["symbol"].tolist()
-        if t not in iv_flow_keep
-    ]
-    faltan = iv_min_survivors - len(iv_flow_keep)
-    repuestos = reponer_iv_pool[:faltan]
-    if repuestos:
-        print(f"  Advertencia: solo {len(iv_flow_keep)} tickers tras filtro de IV - reponiendo con "
-              f"{len(repuestos)} desde el pool de vol. reciente")
-        iv_flow_keep = iv_flow_keep + repuestos
-
-ticker_candidates = list(dict.fromkeys(iv_flow_keep))
-print(f"\nConjunto tras filtro de IV vs volatilidad reciente: {len(ticker_candidates)} tickers\n")
+ticker_candidates = seasonal_candidates["symbol"].tolist()
+print(f"\nConjunto FINAL para optimizacion: {len(ticker_candidates)} tickers\n")
 
 # ================================================
 # FILTRO DE SKEW (cobertura anomala vs especulacion)
@@ -1300,15 +1379,15 @@ print(f"\nConjunto tras filtro de IV vs volatilidad reciente: {len(ticker_candid
 print(f"\nAplicando filtro de skew put/call 25-delta (z_threshold={skew_z_threshold:.2f}, "
       f"lookback={skew_lookback_months} meses)...")
 
-hoy_ts = pd.Timestamp(as_of_date)
+hoy_ts = pd.Timestamp(date.today())
 sample_dates_skew = pd.date_range(
     hoy_ts - relativedelta(months=skew_lookback_months), hoy_ts - timedelta(days=7), freq="W"
 )
 print(f"   Fechas de muestreo historico: {len(sample_dates_skew)} (semanal)")
 
 reponer_pool_skew = (
-    recent_vol_ratio_stats[~recent_vol_ratio_stats["symbol"].isin(ticker_candidates)]
-    .sort_values("recent_vol_ratio")["symbol"].tolist()
+    seasonal_ratio_stats[~seasonal_ratio_stats["symbol"].isin(ticker_candidates)]
+    .sort_values("seasonal_vol_ratio")["symbol"].tolist()
 )
 
 
@@ -1378,7 +1457,7 @@ while True:
         if len(full_set) + len(reemplazos_nuevos) < skew_min_survivors and i_reponer < len(reponer_pool_skew):
             reemplazo = reponer_pool_skew[i_reponer]
             i_reponer += 1
-            print(f"   Reponiendo con: {reemplazo} (pool de vol. reciente validado)")
+            print(f"   Reponiendo con: {reemplazo} (pool estacional validado)")
             reemplazos_nuevos.append(reemplazo)
 
     if not reemplazos_nuevos:
@@ -1430,8 +1509,8 @@ alpha_max = 0.80
 iv_cap_multiplier = iv_outlier_multiplier
 
 print("\nEstimando covarianza robusta: Shrinkage Implied + Historica...")
-print(f"   Tenor objetivo: {target_dte_polygon} dias (consistente con horizonte de inversion, "
-      f"tope universal={options_dte_cap_days}d) | Cap IV: {iv_cap_multiplier:.1f}x vol historica")
+print(f"   Tenor objetivo: {target_dte_polygon} dias (consistente con horizonte de rebalanceo) | "
+      f"Cap IV: {iv_cap_multiplier:.1f}x vol historica")
 
 iv_assets_implied = {a: np.nan for a in assets}
 poly_map = polygon_market_df.set_index("symbol") if len(polygon_market_df) else pd.DataFrame()
@@ -1537,7 +1616,7 @@ else:
 tril_idx = np.tril_indices(n_assets, k=-1)
 rho_hist_avg_ref = np.nanmean(np.abs(R_hist_full[tril_idx]))
 
-# --- Correlacion implicita SECTORIAL (ETFs sectoriales SPDR) ---
+# --- Correlacion implicita SECTORIAL (ETFs sectoriales SPDR + VOX) ---
 print("   Calculando correlacion implicita por sector (ETFs sectoriales)...")
 
 rho_sector_lookup = {etf: np.nan for etf in etf_sectoriales}
@@ -1797,7 +1876,7 @@ print("\n" + "=" * 60)
 print("PORTAFOLIO OPTIMO - PONDERACIONES FINALES")
 print("=" * 60)
 print(f"    Entrenado con: {min(target_years)}-{max(target_years)} (retornos mensuales)")
-print(f"    Horizonte: {horizon_desc} | lambda = {lambda_:.2f}\n")
+print(f"    Mes de ejecucion: {horizon_label} | lambda = {lambda_:.2f}\n")
 
 print(f"  {'Ticker':<8}  {'Peso':>8}")
 print("  " + "-" * 50)
@@ -1812,7 +1891,7 @@ print(f"  Concentracion top 5: {pesos['weight'].head(5).sum() * 100:.2f}%")
 print("=" * 60 + "\n")
 
 print(f"\n=== METRICAS DEL PORTAFOLIO ({min(target_years)}-{max(target_years)}, base mensual) ===")
-print(f"  Horizonte: {horizon_desc}")
+print(f"  Mes de ejecucion: {horizon_label}")
 print(f"  Lambda: {lambda_:.2f}")
 print(f"  Retorno Esperado mensual: {ret_opt * 100:.4f}%")
 print(f"  Volatilidad mensual:      {sd_opt * 100:.4f}%")
@@ -1944,8 +2023,8 @@ ax.set_ylim(y_min, y_max)
 ax.set_title("Frontera Eficiente - Utilidad Cuadratica", fontweight="bold", fontsize=14)
 ax.set_xlabel(f"Riesgo ({horizon_months} meses)")
 ax.set_ylabel(f"Retorno Esperado ({horizon_months} meses)")
-plt.suptitle(f"Horizonte: {horizon_desc} | lambda={lambda_:.2f} | {min(target_years)}-{max(target_years)}",
-             y=0.94, fontsize=10)
+plt.suptitle(f"Horizonte: {horizon_months} mes(es) ({horizon_label}) | lambda={lambda_:.2f} | "
+             f"{min(target_years)}-{max(target_years)}", y=0.94, fontsize=10)
 plt.tight_layout()
 plt.show()
 
@@ -2001,7 +2080,8 @@ if len(results_comparison) > 0:
     ax.set_xlabel("Volatilidad (%)")
     ax.set_ylabel("Retorno Esperado (%)")
     plt.figtext(0.5, -0.02, "lambda bajo = Agresivo | lambda alto = Conservador", ha="center", fontsize=9)
-    plt.suptitle(f"Horizonte: {horizon_desc} | {min(target_years)}-{max(target_years)}", y=0.96, fontsize=10)
+    plt.suptitle(f"Horizonte: {horizon_months} mes(es) ({horizon_label}) | {min(target_years)}-{max(target_years)}",
+                 y=0.96, fontsize=10)
     plt.tight_layout()
     plt.show()
 
@@ -2158,7 +2238,7 @@ if len(yearly_mdd_valid) >= 1:
     ax.set_ylabel("MDD (%)")
     ax.set_xticks(range(mdd_start_year, max(target_years) + 1, 2))
     plt.xticks(rotation=45)
-    plt.suptitle(f"Horizonte: {horizon_desc} | MDD: {mdd_start_year}-{max(target_years)} | "
+    plt.suptitle(f"Horizonte: {horizon_months} mes(es) ({horizon_label}) | MDD: {mdd_start_year}-{max(target_years)} | "
                  f"{int(yearly_mdd['has_data'].sum())} anos con datos", y=0.96, fontsize=10)
     plt.tight_layout()
     plt.show()
@@ -2181,7 +2261,7 @@ print("\n" + "=" * 60)
 print("RESUMEN EJECUTIVO FINAL")
 print("=" * 60)
 print(f"   Periodo de entrenamiento: {min(target_years)}-{max(target_years)}")
-print(f"   Horizonte: {horizon_desc}")
+print(f"   Mes de ejecucion: {horizon_label}")
 print(f"   Activos en portafolio: {len(tickers_portfolio)}")
 print(f"   Retorno esperado mensual: {ret_opt * 100:.2f}%")
 print(f"   Retorno anualizado:       {ret_opt * annualization_factor * 100:.2f}%")
@@ -2192,7 +2272,7 @@ print(f"   Sortino Ratio:            {sortino_opt:.4f}")
 if "median_mdd" in dir():
     print(f"   MDD tipico historico:     {median_mdd * 100:.2f}%")
 
-print(f"\n--- PORTAFOLIO A EJECUTAR (horizonte: {horizon_desc}) ---\n")
+print(f"\n--- PORTAFOLIO A EJECUTAR EN {MONTH_NAME[max(rebalance_months)].upper()} ---\n")
 for _, row in pesos.iterrows():
     print(f"   {row['symbol']:<8}  {row['weight'] * 100:.2f}%")
 print("=" * 60)
