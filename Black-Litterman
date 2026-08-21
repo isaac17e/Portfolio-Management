@@ -28,7 +28,7 @@ POLYGON_API_KEY = userdata.get('PolygonAPI')
 # -----------------------------------------------------------------------------
 TICKERS = [
     "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN",
-    "META", "BRK-B", "LLY", "JPM", "V",
+    "META", "BRK.B", "LLY", "JPM", "V",
     "XOM", "UNH", "MA", "JNJ", "PG",
     "HD", "MRK", "AVGO", "CVX", "COST",
 ]
@@ -419,6 +419,114 @@ else:
     print("\n=== USAR_IV_POLYGON = False - usando Sigma 100% historica ===")
     Sigma = Sigma_hist_df.copy()
 
+
+# =============================================================================
+# BLOQUE 1C: MODULO BKM - MOMENTOS RISK-NEUTRAL DE ORDEN SUPERIOR
+# =============================================================================
+
+from scipy.stats import norm
+
+Rf_anual_bkm = Rf
+
+
+def bs_price(S, K, T, r, sigma, tipo="call"):
+    if T <= 0 or sigma <= 0:
+        return max(0.0, (S - K) if tipo == "call" else (K - S))
+    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * np.sqrt(T))
+    d2 = d1 - sigma * np.sqrt(T)
+    if tipo == "call":
+        return S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+    else:
+        return K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+
+
+def sigma_desde_ssvi(K, F, T, rho, eta, gamma, theta_tau):
+    k = np.log(K / F)
+    w = ssvi_w(k, theta_tau, rho, eta, gamma)
+    w = max(w, 1e-8)
+    return np.sqrt(w / T)
+
+
+def otm_price_ssvi(K, S, F, T, r, rho, eta, gamma, theta_tau):
+    sigma_k = sigma_desde_ssvi(K, F, T, rho, eta, gamma, theta_tau)
+    tipo = "put" if K < F else "call"
+    return bs_price(S, K, T, r, sigma_k, tipo=tipo)
+
+
+def calcular_bkm_moments(S, F, T, r, rho, eta, gamma, theta_tau,
+                          n_std=6, n_puntos=400):
+    sigma_atm = sigma_desde_ssvi(F, F, T, rho, eta, gamma, theta_tau)
+    K_min = F * np.exp(-n_std * sigma_atm * np.sqrt(T))
+    K_max = F * np.exp(n_std * sigma_atm * np.sqrt(T))
+    strikes = np.linspace(K_min, K_max, n_puntos)
+
+    precios = np.array([
+        otm_price_ssvi(K, S, F, T, r, rho, eta, gamma, theta_tau)
+        for K in strikes
+    ])
+
+    lnKF = np.log(strikes / S)
+
+    peso_V = 2.0 * (1 - lnKF) / strikes ** 2
+    peso_W = (6.0 * lnKF - 3.0 * lnKF ** 2) / strikes ** 2
+    peso_X = (12.0 * lnKF ** 2 - 4.0 * lnKF ** 3) / strikes ** 2
+
+    factor = np.exp(r * T)
+    V_T = factor * np.trapz(peso_V * precios, strikes)
+    W_T = factor * np.trapz(peso_W * precios, strikes)
+    X_T = factor * np.trapz(peso_X * precios, strikes)
+
+    mu_T = (np.exp(r * T) - 1
+            - np.exp(r * T) / 2 * V_T
+            - np.exp(r * T) / 6 * W_T
+            - np.exp(r * T) / 24 * X_T)
+
+    MFIV = np.exp(r * T) * V_T - mu_T ** 2
+    if MFIV <= 0 or not np.isfinite(MFIV):
+        return dict(MFIV=np.nan, MFIS=np.nan, MFIK=np.nan,
+                     V_T=V_T, W_T=W_T, X_T=X_T)
+
+    MFIS = (np.exp(r * T) * W_T - 3 * mu_T * np.exp(r * T) * V_T + 2 * mu_T ** 3) / MFIV ** 1.5
+    MFIK = (np.exp(r * T) * X_T - 4 * mu_T * np.exp(r * T) * W_T
+            + 6 * mu_T ** 2 * np.exp(r * T) * V_T - 3 * mu_T ** 4) / MFIV ** 2
+
+    return dict(MFIV=MFIV, MFIS=MFIS, MFIK=MFIK, V_T=V_T, W_T=W_T, X_T=X_T)
+
+
+print("\n=== Calculando momentos BKM (MFIV, MFIS, MFIK) por ticker ===")
+
+bkm_moments = {}
+r_bkm = Rf_anual_bkm
+
+for tk in tickers:
+    if tk not in detalle_ssvi:
+        print(f"  {tk}: sin superficie SSVI valida, se omite BKM (MFIS=0, MFIK=3 neutro)")
+        bkm_moments[tk] = dict(MFIV=np.nan, MFIS=0.0, MFIK=3.0, V_T=np.nan, W_T=np.nan, X_T=np.nan)
+        continue
+
+    det = detalle_ssvi[tk]
+    try:
+        S_tk = precios_diarios[tk].iloc[-1]
+        F_tk = S_tk * np.exp(r_bkm * tau_horizonte)
+        theta_tau_tk = det["sigma_atm"] ** 2 * tau_horizonte
+        resultado_bkm = calcular_bkm_moments(
+            S=S_tk, F=F_tk, T=tau_horizonte, r=r_bkm,
+            rho=det["rho"], eta=det["eta"], gamma=det["gamma"],
+            theta_tau=theta_tau_tk,
+        )
+        bkm_moments[tk] = resultado_bkm
+        print(f"  {tk}: MFIV={resultado_bkm['MFIV']:.4f} | MFIS={resultado_bkm['MFIS']:.3f} "
+              f"| MFIK={resultado_bkm['MFIK']:.3f}")
+    except Exception as e:
+        print(f"  {tk}: fallback neutro ({e})")
+        bkm_moments[tk] = dict(MFIV=np.nan, MFIS=0.0, MFIK=3.0, V_T=np.nan, W_T=np.nan, X_T=np.nan)
+
+MFIS_vec = np.array([bkm_moments[t]["MFIS"] for t in tickers])
+MFIK_vec = np.array([bkm_moments[t]["MFIK"] for t in tickers])
+
+print("\n=== Resumen momentos implicitos (skew=0, kurt=3 => distribucion normal) ===")
+print(pd.DataFrame({"MFIS": np.round(MFIS_vec, 3), "MFIK": np.round(MFIK_vec, 3)}, index=tickers))
+
 # =============================================================================
 # BLOQUE 2: MARKET CAPS VIA YAHOO FINANCE -> w_mkt
 # =============================================================================
@@ -536,9 +644,9 @@ print(P.round(4))
 
 # --- PASO 3: Define el vector Q ---------------------------------------------
 Q = pd.Series({
-    "View_1": 0.10,   # NVDA outperforma XOM en 10% trimestral
-    "View_2": 0.06,   # JPM+MA outperforman JNJ+MRK en 6% trimestral
-    "View_3": 0.08,   # MSFT retorna 8% trimestral
+    "View_1": 0.10,
+    "View_2": 0.06,
+    "View_3": 0.08,
 })
 
 print("\n=== Vector Q (magnitudes del gestor) ===")
@@ -555,59 +663,163 @@ print(f"\n=== Matriz Omega (incertidumbre de views - perfil: {PERFIL_RIESGO}) ==
 print(pd.DataFrame(Omega, index=P.index, columns=P.index).round(6))
 
 # =============================================================================
-# BLOQUE 7: ACTUALIZACION BAYESIANA -> mu_BL
+# BLOQUE 6B: BRIDGE BKM -> BLACK-LITTERMAN (Q, Omega, mu_BL, Sigma_BL)
 # =============================================================================
+
+KAPPA_SKEW = 0.15
+KAPPA_KURT = 0.20
+KURT_BASELINE = 3.0
 
 pi_eq_col = pi_eq.reshape(-1, 1)
 tauSigma = tau * Sigma_mat
-sorpresa = Q_vec - P_mat @ pi_eq_col
-M = P_mat @ tauSigma @ P_mat.T + Omega
-M_inv = np.linalg.inv(M)
-ajuste = tauSigma @ P_mat.T @ M_inv @ sorpresa
-mu_BL = pi_eq_col + ajuste
 
-print("\n=== 'Sorpresa' (Q - P*pi) - cuanto difieren tus views del equilibrio ===")
-print(pd.Series(np.round(sorpresa.flatten(), 4), index=P.index))
+# --- Ajuste de Q por asimetria negativa -------------------------------------
+exposicion_skew_view = P_mat @ MFIS_vec
+penalizacion_skew = KAPPA_SKEW * np.minimum(0.0, exposicion_skew_view)
+Q_adjusted = Q.values + penalizacion_skew
 
-print("\n=== mu_BL - Retornos posteriores Black-Litterman ===")
-print(pd.Series(np.round(mu_BL.flatten(), 4), index=tickers))
+print("\n=== Ajuste de Q por asimetria implicita negativa ===")
+print(pd.DataFrame({
+    "Q_original": Q.values,
+    "Exposicion_MFIS": np.round(exposicion_skew_view, 4),
+    "Penalizacion": np.round(penalizacion_skew, 4),
+    "Q_adjusted": np.round(Q_adjusted, 4),
+}, index=Q.index))
+
+# --- Ajuste de Omega por exceso de curtosis ---------------------------------
+exceso_kurt_vec = np.maximum(0.0, MFIK_vec - KURT_BASELINE)
+exposicion_kurt_view = np.abs(P_mat) @ exceso_kurt_vec
+factor_omega = 1.0 + KAPPA_KURT * exposicion_kurt_view
+Omega_adjusted = np.diag(np.diag(Omega) * factor_omega)
+
+print("\n=== Ajuste de Omega por exceso de curtosis implicita ===")
+print(pd.DataFrame({
+    "Omega_original": np.diag(Omega),
+    "Exceso_MFIK_view": np.round(exposicion_kurt_view, 4),
+    "Factor_escala": np.round(factor_omega, 4),
+    "Omega_adjusted": np.diag(Omega_adjusted),
+}, index=Q.index))
+
+# --- Actualizacion bayesiana con Q_adjusted / Omega_adjusted ----------------
+Q_adj_col = Q_adjusted.reshape(-1, 1)
+sorpresa_adj = Q_adj_col - P_mat @ pi_eq_col
+M_adj = P_mat @ tauSigma @ P_mat.T + Omega_adjusted
+M_adj_inv = np.linalg.inv(M_adj)
+ajuste_adj = tauSigma @ P_mat.T @ M_adj_inv @ sorpresa_adj
+mu_BL_adj = pi_eq_col + ajuste_adj
+
+# --- Sigma_BL posterior formal -----------------------------------------------
+Sigma_BL = Sigma_mat + tauSigma - tauSigma @ P_mat.T @ M_adj_inv @ P_mat @ tauSigma
+Sigma_BL = pd.DataFrame(Sigma_BL, index=tickers, columns=tickers)
 
 comparacion = pd.DataFrame({
     "Ticker": tickers,
     "Pi_eq": np.round(pi_eq, 4),
     "Mu_hist": np.round(mu_historico, 4),
-    "Mu_BL": np.round(mu_BL.flatten(), 4),
+    "Mu_BL_adj": np.round(mu_BL_adj.flatten(), 4),
 })
-comparacion["Ajuste_BL"] = np.round(comparacion["Mu_BL"] - comparacion["Pi_eq"], 4)
-print("\n=== Comparacion: pi vs Historico vs mu_BL ===")
+comparacion["Ajuste_BL"] = np.round(comparacion["Mu_BL_adj"] - comparacion["Pi_eq"], 4)
+
+print("\n=== Comparacion: pi vs Historico vs mu_BL_adj (con ajuste BKM) ===")
 print(comparacion.to_string(index=False))
 
+print(f"\nSigma_BL calculada. Norma Frobenius |Sigma_BL - Sigma|: "
+      f"{np.linalg.norm(Sigma_BL.values - Sigma_mat):.6f}")
+
 # =============================================================================
-# BLOQUE 8: OPTIMIZACION - MARKOWITZ CON mu_BL
+# BLOQUE 8B: OPTIMIZACION MEAN-VARIANCE-SKEWNESS-KURTOSIS (MVSK)
 # =============================================================================
 
-Dmat = delta * Sigma_mat * 2
-Dmat = Dmat + np.eye(n) * 1e-10
-dvec = mu_BL.flatten()
-Amat = np.column_stack([np.ones(n), np.eye(n)])
-bvec = np.concatenate([[1.0], np.zeros(n)])
+from scipy.optimize import minimize as scipy_minimize
 
-sol = quadprog.solve_qp(Dmat, dvec, Amat, bvec, meq=1)
-w_BL = sol[0].copy()
+GAMMA_RA = 3.0
+LAMBDA3 = 1.0
+LAMBDA4 = 1.0
 
-w_BL[w_BL < UMBRAL_PESO_MIN] = 0
-w_BL = w_BL / w_BL.sum()
 
-if np.sum(w_BL > 0) > MAX_TICKERS_FINAL:
-    idx_top = np.argsort(w_BL)[::-1][:MAX_TICKERS_FINAL]
+def construir_tensores_comomento(retornos, sigma_diag_bkm, mfis_bkm, mfik_bkm):
+    X = retornos.values - retornos.values.mean(axis=0)
+    T_obs, n_ = X.shape
+
+    M3 = np.zeros((n_, n_ * n_))
+    M4 = np.zeros((n_, n_ * n_ * n_))
+
+    for i in range(n_):
+        for j in range(n_):
+            for k in range(n_):
+                M3[i, j * n_ + k] = np.mean(X[:, i] * X[:, j] * X[:, k])
+
+    for i in range(n_):
+        for j in range(n_):
+            for k in range(n_):
+                for l in range(n_):
+                    M4[i, j * n_ * n_ + k * n_ + l] = np.mean(X[:, i] * X[:, j] * X[:, k] * X[:, l])
+
+    for i in range(n_):
+        if np.isfinite(mfis_bkm[i]):
+            M3[i, i * n_ + i] = mfis_bkm[i] * sigma_diag_bkm[i] ** 3
+        if np.isfinite(mfik_bkm[i]):
+            M4[i, i * n_ * n_ + i * n_ + i] = mfik_bkm[i] * sigma_diag_bkm[i] ** 4
+
+    return M3, M4
+
+
+def portfolio_skew(w, M3):
+    kron_ww = np.kron(w, w)
+    return float(w @ M3 @ kron_ww)
+
+
+def portfolio_kurt(w, M4):
+    kron_www = np.kron(np.kron(w, w), w)
+    return float(w @ M4 @ kron_www)
+
+
+def utilidad_mvsk_negativa(w, mu, Sigma_arr, M3, M4, gamma, lam3, lam4):
+    ret = w @ mu
+    var = w @ Sigma_arr @ w
+    skew = portfolio_skew(w, M3)
+    kurt = portfolio_kurt(w, M4)
+    utilidad = ret - (gamma / 2) * var + (lam3 / 3) * skew - (lam4 / 4) * kurt
+    return -utilidad
+
+
+sigma_diag_para_bkm = np.sqrt(np.diag(Sigma_BL.values))
+
+print("\n=== Construyendo tensores de co-skewness / co-kurtosis ===")
+M3, M4 = construir_tensores_comomento(retornos_sem[tickers], sigma_diag_para_bkm, MFIS_vec, MFIK_vec)
+print(f"M3 shape: {M3.shape} | M4 shape: {M4.shape}")
+
+mu_opt = mu_BL_adj.flatten()
+Sigma_opt = Sigma_BL.values
+
+w0 = np.ones(n) / n
+bounds = [(0.0, 1.0)] * n
+constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
+
+resultado_mvsk = scipy_minimize(
+    utilidad_mvsk_negativa, w0,
+    args=(mu_opt, Sigma_opt, M3, M4, GAMMA_RA, LAMBDA3, LAMBDA4),
+    method="SLSQP", bounds=bounds, constraints=constraints,
+    options=dict(maxiter=500, ftol=1e-10),
+)
+
+if not resultado_mvsk.success:
+    print(f"  Aviso: el optimizador SLSQP no convergio limpiamente ({resultado_mvsk.message})")
+
+w_mvsk = resultado_mvsk.x.copy()
+w_mvsk[w_mvsk < UMBRAL_PESO_MIN] = 0
+w_mvsk = w_mvsk / w_mvsk.sum()
+
+if np.sum(w_mvsk > 0) > MAX_TICKERS_FINAL:
+    idx_top = np.argsort(w_mvsk)[::-1][:MAX_TICKERS_FINAL]
     w_final = np.zeros(n)
-    w_final[idx_top] = w_BL[idx_top]
-    w_BL = w_final / w_final.sum()
+    w_final[idx_top] = w_mvsk[idx_top]
+    w_mvsk = w_final / w_final.sum()
 
-w_BL = pd.Series(w_BL, index=tickers)
+w_mvsk = pd.Series(w_mvsk, index=tickers)
 
-print("\n=== Pesos optimos - Portafolio Black-Litterman ===")
-print(w_BL[w_BL > 0].round(4))
+print("\n=== Pesos optimos - Portafolio MVSK (BL + BKM) ===")
+print(w_mvsk[w_mvsk > 0].round(4))
 
 # =============================================================================
 # BLOQUE 9: METRICAS DEL PORTAFOLIO
@@ -615,25 +827,29 @@ print(w_BL[w_BL > 0].round(4))
 
 etiqueta_horizonte = f"{MESES_HORIZONTE} mes(es)"
 
-w_BL_vec = w_BL.values
-mu_BL_vec = mu_BL.flatten()
+w_mvsk_vec = w_mvsk.values
+mu_BL_vec = mu_BL_adj.flatten()
 
-ret_port = float(w_BL_vec @ mu_BL_vec)
-var_port = float(w_BL_vec @ Sigma_mat @ w_BL_vec)
+ret_port = float(w_mvsk_vec @ mu_BL_vec)
+var_port = float(w_mvsk_vec @ Sigma_opt @ w_mvsk_vec)
 vol_port = math.sqrt(var_port)
+skew_port = portfolio_skew(w_mvsk_vec, M3)
+kurt_port = portfolio_kurt(w_mvsk_vec, M4)
 Rf_h = Rf * (MESES_HORIZONTE / 12)
 sharpe_BL = (ret_port - Rf_h) / vol_port
 
 ret_mkt = float(w_mkt @ mu_BL_vec)
-var_mkt = float(w_mkt @ Sigma_mat @ w_mkt)
+var_mkt = float(w_mkt @ Sigma_opt @ w_mkt)
 vol_mkt = math.sqrt(var_mkt)
 sharpe_mkt = (ret_mkt - Rf_h) / vol_mkt
 
-print(f"\n=== Metricas - Portafolio BL ({etiqueta_horizonte}) ===")
+print(f"\n=== Metricas - Portafolio MVSK ({etiqueta_horizonte}) ===")
 print(f"Retorno esperado:   {ret_port:.4f}")
 print(f"Volatilidad:        {vol_port:.4f}")
-print(f"Sharpe Ratio:       {sharpe_BL:.4f}")
-print(f"Rf horizonte:       {Rf_h:.4f}")
+print(f"Skewness:            {skew_port:.6f}")
+print(f"Kurtosis:            {kurt_port:.6f}")
+print(f"Sharpe Ratio:        {sharpe_BL:.4f}")
+print(f"Rf horizonte:        {Rf_h:.4f}")
 
 print(f"\n=== Metricas - Portafolio de mercado ({etiqueta_horizonte}) ===")
 print(f"Retorno esperado:   {ret_mkt:.4f}")
@@ -646,41 +862,40 @@ print(f"Sharpe Ratio:       {sharpe_mkt:.4f}")
 
 fig, axes = plt.subplots(2, 2, figsize=(15, 11))
 
-# Grafico 1: pi vs Historico vs mu_BL por ticker
 ax = axes[0, 0]
 x = np.arange(n)
 width = 0.27
 ax.bar(x - width, comparacion["Pi_eq"], width, color="#4472C4", label="pi (Equilibrio)")
 ax.bar(x, comparacion["Mu_hist"], width, color="#FFC000", label="Historico")
-ax.bar(x + width, comparacion["Mu_BL"], width, color="#ED7D31", label="mu_BL (Posterior)")
+ax.bar(x + width, comparacion["Mu_BL_adj"], width, color="#ED7D31", label="mu_BL_adj (Posterior BKM)")
 ax.set_xticks(x)
 ax.set_xticklabels(comparacion["Ticker"], rotation=90, fontsize=8)
 ax.set_title(f"Retornos esperados - {etiqueta_horizonte}", fontweight="bold")
 ax.set_ylabel("Retorno esperado")
 ax.legend(fontsize=8)
 
-# Grafico 2: Pesos BL vs mercado
 ax = axes[0, 1]
 ax.bar(x - width / 2, w_mkt, width, color="#4472C4", label="Mercado")
-ax.bar(x + width / 2, w_BL_vec, width, color="#70AD47", label=f"BL: {PERFIL_RIESGO.upper()}")
+ax.bar(x + width / 2, w_mvsk_vec, width, color="#70AD47", label=f"MVSK: {PERFIL_RIESGO.upper()}")
 ax.set_xticks(x)
 ax.set_xticklabels(tickers, rotation=90, fontsize=8)
-ax.set_title("Pesos: Mercado vs BL", fontweight="bold")
+ax.set_title("Pesos: Mercado vs MVSK", fontweight="bold")
 ax.set_ylabel("Peso")
 ax.legend(fontsize=8)
 
-# Grafico 3: Sharpe simulado por perfil de riesgo
 ax = axes[1, 0]
 sharpes_perfiles = {}
 for nm, pf in PERFILES.items():
     Om_sim = np.diag(np.diag(pf["tau"] * P_mat @ Sigma_mat @ P_mat.T)) * pf["omega_scale"]
     M_sim = P_mat @ (pf["tau"] * Sigma_mat) @ P_mat.T + Om_sim
     try:
-        aj_sim = (pf["tau"] * Sigma_mat) @ P_mat.T @ np.linalg.inv(M_sim) @ sorpresa
+        aj_sim = (pf["tau"] * Sigma_mat) @ P_mat.T @ np.linalg.inv(M_sim) @ (Q_adj_col - P_mat @ pi_eq_col)
         mu_sim = pi_eq_col + aj_sim
         Dm_sim = pf["delta"] * Sigma_mat * 2 + np.eye(n) * 1e-10
         dv_sim = mu_sim.flatten()
-        op_sim = quadprog.solve_qp(Dm_sim, dv_sim, Amat, bvec, meq=1)[0]
+        Amat_sim = np.column_stack([np.ones(n), np.eye(n)])
+        bvec_sim = np.concatenate([[1.0], np.zeros(n)])
+        op_sim = quadprog.solve_qp(Dm_sim, dv_sim, Amat_sim, bvec_sim, meq=1)[0]
     except Exception:
         op_sim = w_mkt.copy()
         mu_sim = mu_BL_vec.reshape(-1, 1)
@@ -696,26 +911,25 @@ valores_sharpe = [sharpes_perfiles[nm] for nm in nombres_perfiles]
 ax.bar(["Conservador", "Moderado", "Agresivo"], valores_sharpe,
        color=["#70AD47", "#FFC000", "#ED7D31"])
 ax.axhline(sharpe_mkt, color="#4472C4", linestyle="--", linewidth=2, label="Mercado")
-ax.set_title("Sharpe por perfil de riesgo", fontweight="bold")
+ax.set_title("Sharpe por perfil de riesgo (MV, referencia)", fontweight="bold")
 ax.set_ylabel("Sharpe Ratio")
 ax.set_ylim(0, max(valores_sharpe) * 1.3)
 ax.legend(fontsize=8)
 
-# Grafico 4: Ajuste BL vs pi (impacto de tus views)
 ax = axes[1, 1]
 comp_sorted = comparacion.sort_values("Ajuste_BL")
 colores_ajuste = ["#70AD47" if v > 0 else "#ED7D31" for v in comp_sorted["Ajuste_BL"]]
 ax.bar(comp_sorted["Ticker"], comp_sorted["Ajuste_BL"], color=colores_ajuste)
 ax.axhline(0, color="black", linewidth=1.2)
 ax.set_xticklabels(comp_sorted["Ticker"], rotation=90, fontsize=8)
-ax.set_title("Ajuste mu_BL vs pi (impacto de views)", fontweight="bold")
-ax.set_ylabel("mu_BL - pi")
+ax.set_title("Ajuste mu_BL_adj vs pi (impacto de views + BKM)", fontweight="bold")
+ax.set_ylabel("mu_BL_adj - pi")
 
 plt.tight_layout()
 plt.show()
 
 # =============================================================================
-# BLOQUE 11: MAXIMUM DRAWDOWN (MDD) DEL PORTAFOLIO BL
+# BLOQUE 11: MAXIMUM DRAWDOWN (MDD) DEL PORTAFOLIO MVSK
 # =============================================================================
 
 print("\n=== ANALISIS DE MAXIMUM DRAWDOWN DEL PORTAFOLIO ===")
@@ -734,8 +948,8 @@ def calc_mdd(r):
     return mdd
 
 
-tickers_bl = w_BL[w_BL > 0].index.tolist()
-weights_bl = w_BL[tickers_bl]
+tickers_bl = w_mvsk[w_mvsk > 0].index.tolist()
+weights_bl = w_mvsk[tickers_bl]
 
 fecha_mdd_inicio = date(MDD_START_YEAR, 1, 1)
 
@@ -758,7 +972,7 @@ if len(series_ok) == 0:
 else:
     precios_mdd = pd.DataFrame(series_ok)
     tickers_bl = [t for t in tickers_bl if t in precios_mdd.columns]
-    weights_bl = w_BL[tickers_bl]
+    weights_bl = w_mvsk[tickers_bl]
     weights_bl = weights_bl / weights_bl.sum()
 
 if precios_mdd is not None and len(precios_mdd) >= 10:
@@ -841,7 +1055,7 @@ if precios_mdd is not None and len(precios_mdd) >= 10:
             f"P90: {mdd_p90 * 100:.2f}%", color="darkorange", fontsize=9)
     ax.set_xticks(range(MDD_START_YEAR, date.today().year + 1))
     plt.xticks(rotation=45)
-    ax.set_title("Maximum Drawdown Historico - Portafolio Black-Litterman", fontweight="bold", fontsize=13)
+    ax.set_title("Maximum Drawdown Historico - Portafolio MVSK (BL + BKM)", fontweight="bold", fontsize=13)
     ax.set_xlabel("Ano")
     ax.set_ylabel("MDD (%)")
     plt.suptitle(f"Perfil: {PERFIL_RIESGO.upper()} | Horizonte: {etiqueta_horizonte} | "
@@ -855,6 +1069,6 @@ else:
     print("  Datos insuficientes para calcular MDD (minimo 10 observaciones).")
     print("  Verifica que MDD_START_YEAR este dentro de la ventana de 2 anios.")
 
-print("\n=== FIN - BLACK-LITTERMAN v5 ===")
+print("\n=== FIN - BLACK-LITTERMAN + BKM + MVSK ===")
 print(f"Perfil: {PERFIL_RIESGO.upper()} | Horizonte: {etiqueta_horizonte} | "
       f"Universo: {n} tickers | Views: {N_VIEWS} | MDD desde: {MDD_START_YEAR}")
